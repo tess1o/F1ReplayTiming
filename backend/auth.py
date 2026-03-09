@@ -16,8 +16,8 @@ def _get_passphrase() -> str:
 
 
 def generate_token(passphrase: str) -> str | None:
-    expected = _get_passphrase()
-    if not expected or passphrase != expected:
+    expected = _get_passphrase().strip()
+    if not expected or passphrase.strip() != expected:
         return None
     return _make_token(expected)
 
