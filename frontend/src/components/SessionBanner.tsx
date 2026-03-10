@@ -25,7 +25,7 @@ const SESSION_LABELS: Record<string, string> = {
   FP3: "Practice 3",
 };
 
-const LEADERBOARD_SETTINGS: { key: keyof ReplaySettings; label: string; raceOnly?: boolean; badge?: string }[] = [
+const LEADERBOARD_SETTINGS: { key: keyof ReplaySettings; label: string; raceOnly?: boolean; qualiOnly?: boolean; badge?: string; parent?: keyof ReplaySettings }[] = [
   { key: "showTeamAbbr", label: "Team" },
   { key: "showGridChange", label: "Grid position change", raceOnly: true },
   { key: "showGapToLeader", label: "Gap" },
@@ -33,7 +33,10 @@ const LEADERBOARD_SETTINGS: { key: keyof ReplaySettings; label: string; raceOnly
   { key: "showTyreType", label: "Tyre type" },
   { key: "showTyreAge", label: "Tyre age" },
   { key: "showTyreHistory", label: "Tyre history", raceOnly: true },
+  { key: "showSectors", label: "Live sectors", qualiOnly: true },
   { key: "showPitPrediction", label: "Pit prediction", raceOnly: true, badge: "Beta" },
+  { key: "showPitConfidence", label: "Confidence", raceOnly: true, parent: "showPitPrediction" },
+  { key: "showPitFreeAir", label: "Pit gaps", raceOnly: true, parent: "showPitPrediction" },
 ];
 
 const WEATHER_SETTINGS: { key: keyof ReplaySettings; label: string }[] = [
@@ -61,6 +64,7 @@ export default function SessionBanner({
 }: Props) {
   const settings = settingsProp || DEFAULT_SETTINGS;
   const isRace = sessionType === "R" || sessionType === "S";
+  const isQualifying = sessionType === "Q" || sessionType === "SQ";
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
@@ -213,36 +217,40 @@ export default function SessionBanner({
                     />
                   </div>
                 </button>
-                {LEADERBOARD_SETTINGS.filter(s => !s.raceOnly || isRace).map(({ key, label, badge }) => (
-                  <button
-                    key={key}
-                    onClick={() => onSettingChange?.(key, !settings[key])}
-                    disabled={!settings.showLeaderboard}
-                    className={`w-full flex items-center justify-between pl-8 pr-4 py-1.5 hover:bg-white/5 transition-colors ${
-                      !settings.showLeaderboard ? "opacity-40 pointer-events-none" : ""
-                    }`}
-                  >
-                    <span className="text-sm text-white flex items-center gap-2">
-                      {label}
-                      {badge && (
-                        <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-f1-red/20 text-f1-red leading-none">
-                          {badge}
-                        </span>
-                      )}
-                    </span>
-                    <div
-                      className={`relative w-9 h-5 rounded-full transition-colors ${
-                        settings[key] ? "bg-f1-red" : "bg-f1-border"
+                {LEADERBOARD_SETTINGS.filter(s => (!s.raceOnly || isRace) && (!s.qualiOnly || isQualifying)).map(({ key, label, badge, parent }) => {
+                  const parentOff = parent ? !settings[parent] : false;
+                  const disabled = !settings.showLeaderboard || parentOff;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => onSettingChange?.(key, !settings[key])}
+                      disabled={disabled}
+                      className={`w-full flex items-center justify-between ${parent ? "pl-14" : "pl-8"} pr-4 ${parent ? "py-1" : "py-1.5"} hover:bg-white/5 transition-colors ${
+                        disabled ? "opacity-40 pointer-events-none" : ""
                       }`}
                     >
+                      <span className={`${parent ? "text-xs text-f1-muted" : "text-sm text-white"} flex items-center gap-2`}>
+                        {label}
+                        {badge && (
+                          <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-f1-red/20 text-f1-red leading-none">
+                            {badge}
+                          </span>
+                        )}
+                      </span>
                       <div
-                        className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
-                          settings[key] ? "translate-x-[18px]" : "translate-x-0.5"
+                        className={`relative ${parent ? "w-7 h-4" : "w-9 h-5"} rounded-full transition-colors ${
+                          settings[key] ? "bg-f1-red" : "bg-f1-border"
                         }`}
-                      />
-                    </div>
-                  </button>
-                ))}
+                      >
+                        <div
+                          className={`absolute top-0.5 ${parent ? "w-3 h-3" : "w-4 h-4"} bg-white rounded-full transition-transform ${
+                            settings[key] ? (parent ? "translate-x-[14px]" : "translate-x-[18px]") : "translate-x-0.5"
+                          }`}
+                        />
+                      </div>
+                    </button>
+                  );
+                })}
 
                 {/* Divider */}
                 <div className="border-t border-f1-border my-2" />
@@ -418,6 +426,28 @@ export default function SessionBanner({
                   The leaderboard shows the last two tyre compounds used by each
                   driver as smaller icons next to their current tyre. Tyre changes
                   and pit stop counts update when the driver exits the pit lane.
+                </p>
+              </div>
+
+              {/* Pit prediction */}
+              <div>
+                <h3 className="text-sm font-bold text-f1-red uppercase tracking-wider mb-2">
+                  Pit position prediction
+                </h3>
+                <p className="text-sm text-f1-muted leading-relaxed">
+                  Shows the predicted position a driver would return to if they pitted
+                  now, using precomputed pit loss times for each circuit. Predictions
+                  appear from lap 15 onwards and adjust for Safety Car and Virtual
+                  Safety Car conditions.
+                </p>
+                <p className="text-sm text-f1-muted leading-relaxed mt-2">
+                  The confidence indicator colour-codes each prediction based on
+                  the margin to the next position behind: default colour means more
+                  than 2.5s of margin, <span className="text-yellow-400 font-bold">yellow</span> means
+                  1–2.5s (a slower pit stop could cost a position),
+                  and <span className="text-red-400 font-bold">red</span> means less than 1s (very tight).
+                  The pit gaps show the predicted gap to the car ahead (↑) and the
+                  car behind (↓) after pitting.
                 </p>
               </div>
 

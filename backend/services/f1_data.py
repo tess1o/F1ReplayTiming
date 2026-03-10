@@ -660,6 +660,46 @@ def _get_driver_positions_by_time_sync(
             driver_best_lap_events[drv] = events
             driver_lap_completions[drv] = completions
 
+    # For qualifying sessions: build sector completion events per driver
+    # Each entry: (session_time, sector_num, sector_time_seconds, lap_number, is_out_lap)
+    # Also pre-compute which laps are out laps (lap 1 or first lap after pit exit)
+    driver_sector_events: dict[str, list[tuple[float, int, float, int, bool]]] = {}
+    driver_out_laps: dict[str, set[int]] = {}
+    if session_type in ("Q", "SQ"):
+        for drv in drivers_list:
+            drv_laps_df = laps.pick_drivers(drv).sort_values("LapNumber")
+            sector_events = []
+            # Track which laps are out laps: lap 1 is always out lap,
+            # and the first lap after a pit exit is an out lap
+            out_lap_numbers = {1}  # lap 1 is always an out lap
+            for _, lap_row in drv_laps_df.iterrows():
+                is_pit_out = lap_row.get("PitOutTime") is not pd.NaT and pd.notna(lap_row.get("PitOutTime"))
+                if is_pit_out:
+                    # This lap has a pit exit — it's an out lap
+                    out_lap_numbers.add(int(lap_row["LapNumber"]))
+
+            for _, lap_row in drv_laps_df.iterrows():
+                lap_num = int(lap_row["LapNumber"])
+                is_out_lap = lap_num in out_lap_numbers
+                for sec_num, sec_time_col, sec_session_col in [
+                    (1, "Sector1Time", "Sector1SessionTime"),
+                    (2, "Sector2Time", "Sector2SessionTime"),
+                    (3, "Sector3Time", "Sector3SessionTime"),
+                ]:
+                    sec_session_t = lap_row.get(sec_session_col)
+                    sec_time = lap_row.get(sec_time_col)
+                    if pd.notna(sec_session_t) and pd.notna(sec_time):
+                        sector_events.append((
+                            sec_session_t.total_seconds(),
+                            sec_num,
+                            sec_time.total_seconds(),
+                            lap_num,
+                            is_out_lap,
+                        ))
+            sector_events.sort(key=lambda x: x[0])
+            driver_sector_events[drv] = sector_events
+            driver_out_laps[drv] = out_lap_numbers
+
     def _format_lap_time(seconds: float) -> str:
         """Format seconds as M:SS.sss lap time string."""
         mins = int(seconds // 60)
@@ -1147,8 +1187,11 @@ def _get_driver_positions_by_time_sync(
                 if best is not None:
                     driver_best_times[d["abbr"]] = best
 
-            # Sort: drivers with times by best time, drivers without at bottom
-            frame_drivers.sort(key=lambda d: driver_best_times.get(d["abbr"], float("inf")))
+            # Sort: retired drivers at bottom, then drivers with times by best time, then no-time drivers
+            frame_drivers.sort(key=lambda d: (
+                2 if d.get("retired") else (0 if d["abbr"] in driver_best_times else 1),
+                driver_best_times.get(d["abbr"], float("inf")),
+            ))
             fastest_time = None
             for pos, d in enumerate(frame_drivers, 1):
                 d["position"] = pos
@@ -1163,6 +1206,102 @@ def _get_driver_positions_by_time_sync(
                 else:
                     d["gap"] = "No time"
                     d["no_timing"] = False
+
+            # Add live sector indicators for qualifying
+            if session_type in ("Q", "SQ"):
+                # Track overall best and personal best sector times up to now
+                overall_best_sectors: dict[int, float] = {}  # sector_num -> best time
+                personal_best_sectors: dict[str, dict[int, float]] = {}  # driver -> sector_num -> best time
+
+                # First pass: compute bests from all completed sectors up to now
+                for drv_abbr in drivers_list:
+                    pb: dict[int, float] = {}
+                    for evt_t, sec_num, sec_time, lap_num, is_out_lap in driver_sector_events.get(drv_abbr, []):
+                        if evt_t > session_t_now:
+                            break
+                        if is_out_lap:
+                            continue
+                        # Update personal best
+                        if sec_num not in pb or sec_time < pb[sec_num]:
+                            pb[sec_num] = sec_time
+                        # Update overall best
+                        if sec_num not in overall_best_sectors or sec_time < overall_best_sectors[sec_num]:
+                            overall_best_sectors[sec_num] = sec_time
+                    personal_best_sectors[drv_abbr] = pb
+
+                # Second pass: for each driver, find current lap sectors
+                SECTOR_LINGER = 5.0  # seconds to keep showing all 3 sectors after S3
+
+                for d in frame_drivers:
+                    drv_abbr = d["abbr"]
+                    events = driver_sector_events.get(drv_abbr, [])
+
+                    def _collect_sectors_for_lap(target_lap: int) -> list[dict]:
+                        """Collect completed sector indicators for a specific lap."""
+                        result = []
+                        for evt_t2, sec_num2, sec_time2, lap_num2, is_out_lap2 in events:
+                            if evt_t2 > session_t_now:
+                                break
+                            if lap_num2 == target_lap and not is_out_lap2:
+                                pb = personal_best_sectors.get(drv_abbr, {})
+                                ob = overall_best_sectors.get(sec_num2)
+                                if ob is not None and sec_time2 <= ob + 0.0005:
+                                    color = "purple"
+                                elif sec_num2 in pb and sec_time2 <= pb[sec_num2] + 0.0005:
+                                    color = "green"
+                                else:
+                                    color = "yellow"
+                                result.append({"num": sec_num2, "color": color})
+                        return result
+
+                    # Find the most recent sector event to determine what lap we're on
+                    last_evt_lap = None
+                    last_evt_sec = None
+                    last_evt_time = None
+                    last_evt_out = False
+                    for evt_t, sec_num, sec_time, lap_num, is_out_lap in reversed(events):
+                        if evt_t <= session_t_now:
+                            last_evt_lap = lap_num
+                            last_evt_sec = sec_num
+                            last_evt_time = evt_t
+                            last_evt_out = is_out_lap
+                            break
+
+                    # Check if the driver has moved to a newer lap (no sectors yet)
+                    current_lap_num = last_evt_lap
+                    is_current_out_lap = last_evt_out
+                    for comp_t, comp_lap in driver_lap_completions.get(drv_abbr, []):
+                        if comp_t <= session_t_now:
+                            if current_lap_num is None or comp_lap >= current_lap_num:
+                                current_lap_num = comp_lap + 1
+                                is_current_out_lap = current_lap_num in driver_out_laps.get(drv_abbr, set())
+                        else:
+                            break
+
+                    if current_lap_num is None:
+                        d["sectors"] = None
+                        continue
+
+                    # If we're on the same lap as the last sector event, show that lap's sectors
+                    if current_lap_num == last_evt_lap and not last_evt_out:
+                        sectors = _collect_sectors_for_lap(current_lap_num)
+                        d["sectors"] = sectors if sectors else None
+                        continue
+
+                    # We've moved to a new lap — check if we should linger the previous lap's S3
+                    if last_evt_sec == 3 and not last_evt_out and last_evt_time is not None:
+                        if session_t_now - last_evt_time <= SECTOR_LINGER:
+                            # Show the completed previous lap's sectors for a few more seconds
+                            sectors = _collect_sectors_for_lap(last_evt_lap)
+                            d["sectors"] = sectors if sectors else None
+                            continue
+
+                    # On an out lap or past the linger period
+                    if is_current_out_lap:
+                        d["sectors"] = None
+                    else:
+                        sectors = _collect_sectors_for_lap(current_lap_num)
+                        d["sectors"] = sectors if sectors else None
 
         # Determine current lap from leader's gap ("LAP N") and assign fastest lap
         current_lap = 1

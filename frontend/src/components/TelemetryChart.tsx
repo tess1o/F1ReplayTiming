@@ -6,6 +6,7 @@ interface Props {
   visible: boolean;
   driver: ReplayDriver | null;
   year?: number;
+  isQualifying?: boolean;
 }
 
 function BarPips({
@@ -40,7 +41,13 @@ function BarPips({
   );
 }
 
-export default function TelemetryChart({ visible, driver, year }: Props) {
+const SECTOR_COLORS: Record<string, string> = {
+  purple: "#A855F7",
+  green: "#22C55E",
+  yellow: "#EAB308",
+};
+
+export default function TelemetryChart({ visible, driver, year, isQualifying }: Props) {
   const hasDrs = !year || year < 2026;
   if (!visible) return null;
 
@@ -74,6 +81,22 @@ export default function TelemetryChart({ visible, driver, year }: Props) {
             {driver.abbr}
           </span>
         </div>
+
+        {/* Sector indicators (qualifying only) */}
+        {isQualifying && (
+          <div className="flex items-center gap-[2px] shrink-0 -ml-1.5 sm:-ml-3">
+            {[1, 2, 3].map((sn) => {
+              const sec = driver.sectors?.find((s) => s.num === sn);
+              return (
+                <span
+                  key={sn}
+                  className="w-[6px] h-[14px] rounded-[1px]"
+                  style={{ backgroundColor: sec ? SECTOR_COLORS[sec.color] || "#3A3A4A" : "#3A3A4A" }}
+                />
+              );
+            })}
+          </div>
+        )}
 
         {/* Speed */}
         <div className="w-[50px] sm:w-[85px] flex items-center shrink-0">

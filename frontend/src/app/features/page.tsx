@@ -101,7 +101,11 @@ export default function FeaturesPage() {
                 <img src="/pit-return.png" alt="" className="w-3 h-3 opacity-50 invert" />
                 <span className="text-[10px] font-bold text-f1-muted">P5</span>
               </span>
-              <span className="text-sm text-f1-text">Predicted return position if the driver pitted now. Race only.</span>
+              <span className="flex flex-col items-end flex-shrink-0 leading-tight">
+                <span className="text-[8px] font-bold text-f1-muted">↑3.2s</span>
+                <span className="text-[8px] font-bold text-f1-muted">↓8.4s</span>
+              </span>
+              <span className="text-sm text-f1-text">Predicted return position with gap ahead (top) and gap behind (bottom). Race only.</span>
             </div>
 
             {/* Tyre compound */}
@@ -162,10 +166,32 @@ export default function FeaturesPage() {
             minus two clean lap times. The prediction adds this loss to the driver&apos;s current gap and finds
             where they&apos;d slot back into the order.
           </p>
-          <p className="text-f1-text leading-relaxed">
+          <p className="text-f1-text leading-relaxed mb-3">
             Under Safety Car or Virtual Safety Car conditions, reduced pit loss values are used
             (approximately 45% and 65% of the green flag loss respectively), reflecting the lower time
             cost of pitting under caution. Predictions appear from lap 15 onwards.
+          </p>
+          <h3 className="text-sm font-bold text-f1-red uppercase tracking-wider mb-2">
+            Confidence indicator
+          </h3>
+          <p className="text-f1-text leading-relaxed mb-3">
+            Since predictions use average pit loss times, the actual result may vary. The confidence
+            indicator (togglable via settings) colour-codes each prediction based on the margin to the
+            next position behind:
+          </p>
+          <ul className="text-f1-text leading-relaxed space-y-1 ml-4 list-disc">
+            <li><span className="text-f1-muted font-bold">Default</span> — more than 2.5s margin, high confidence</li>
+            <li><span className="text-yellow-400 font-bold">Yellow</span> — 1s to 2.5s margin, a slower pit stop could cost a position</li>
+            <li><span className="text-red-400 font-bold">Red</span> — less than 1s margin, very tight</li>
+          </ul>
+          <h3 className="text-sm font-bold text-f1-red uppercase tracking-wider mt-4 mb-2">
+            Pit gaps
+          </h3>
+          <p className="text-f1-text leading-relaxed">
+            Alongside the predicted position, two gap values are stacked showing the predicted
+            gap to the car ahead (top) and the gap to the car behind (bottom) after the pit stop.
+            This helps assess whether the driver would rejoin in clean air or in traffic, and how
+            secure their predicted position would be.
           </p>
         </section>
 

@@ -12,6 +12,9 @@ interface Props {
   settings: ReplaySettings;
   currentTime: number;
   isRace: boolean;
+  isQualifying?: boolean;
+  compact?: boolean;
+  onScaleChange?: (scale: number) => void;
 }
 
 function formatGap(gap: string | null): string {
@@ -70,7 +73,7 @@ function computeIntervals(sorted: ReplayDriver[]): Map<string, string> {
   return intervals;
 }
 
-export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick, settings, currentTime, isRace }: Props) {
+export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick, settings, currentTime, isRace, isQualifying, compact, onScaleChange }: Props) {
   const [showInterval, setShowInterval] = useState(true);
   const [scale, setScale] = useState(1);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -78,24 +81,31 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
 
   useEffect(() => {
     function updateScale() {
+      if (compact) {
+        setScale(1);
+        onScaleChange?.(1);
+        return;
+      }
       if (!containerRef.current || !contentRef.current) return;
       // On mobile (< 640px), don't scale - let it scroll instead
       if (window.innerWidth < 640) {
         setScale(1);
+        onScaleChange?.(1);
         return;
       }
       const containerH = containerRef.current.clientHeight;
       const contentH = contentRef.current.scrollHeight;
+      let newScale = 1;
       if (contentH > containerH && contentH > 0) {
-        setScale(Math.max(0.55, containerH / contentH));
-      } else {
-        setScale(1);
+        newScale = Math.max(0.55, containerH / contentH);
       }
+      setScale(newScale);
+      onScaleChange?.(newScale);
     }
     updateScale();
     window.addEventListener("resize", updateScale);
     return () => window.removeEventListener("resize", updateScale);
-  }, [drivers.length, settings.showGapToLeader, isRace]);
+  }, [drivers.length, settings.showGapToLeader, isRace, compact, onScaleChange]);
 
   const sorted = [...drivers].sort(
     (a, b) => (a.position ?? 999) - (b.position ?? 999),
@@ -104,29 +114,8 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
   const intervals = isRace && showInterval ? computeIntervals(sorted) : null;
 
   return (
-    <div ref={containerRef} className="bg-f1-card border-f1-border h-full overflow-y-auto sm:overflow-hidden">
+    <div ref={containerRef} className={`bg-f1-card border-f1-border h-full ${compact ? "overflow-y-auto" : "overflow-y-auto sm:overflow-hidden"}`}>
       <div ref={contentRef} style={{ transform: `scale(${scale})`, transformOrigin: "top left", width: `${100 / scale}%` }}>
-      {/* Interval / Leader toggle - race only */}
-      {isRace && settings.showGapToLeader && (
-        <div className="flex border-b border-f1-border/50">
-          <button
-            onClick={() => setShowInterval(true)}
-            className={`flex-1 py-1 text-[9px] font-bold uppercase tracking-wider transition-colors ${
-              showInterval ? "text-white bg-white/5" : "text-f1-muted hover:text-white"
-            }`}
-          >
-            Interval
-          </button>
-          <button
-            onClick={() => setShowInterval(false)}
-            className={`flex-1 py-1 text-[9px] font-bold uppercase tracking-wider transition-colors ${
-              !showInterval ? "text-white bg-white/5" : "text-f1-muted hover:text-white"
-            }`}
-          >
-            Leader
-          </button>
-        </div>
-      )}
 
       <div className="divide-y divide-f1-border/50">
         {sorted.map((drv) => {
@@ -238,8 +227,39 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
 
               {/* Gap / best time - 56px */}
               {settings.showGapToLeader && (
-                <span className={`w-14 flex-shrink-0 text-xs font-bold text-right ${drv.in_pit && isRace && !drv.retired ? "text-yellow-400" : isRace ? "text-f1-muted" : drv.position === 1 ? "text-purple-400" : "text-f1-muted"}`}>
-                  {displayGap}
+                isRace && isLeader && !drv.retired ? (
+                  <span
+                    className="w-14 flex-shrink-0 flex justify-end"
+                    onClick={(e) => { e.stopPropagation(); setShowInterval(!showInterval); }}
+                  >
+                    <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-white/10 text-white cursor-pointer hover:bg-white/20 transition-colors">
+                      {showInterval ? "Interval" : "Leader"}
+                    </span>
+                  </span>
+                ) : (
+                  <span className={`w-14 flex-shrink-0 text-xs font-bold text-right ${drv.in_pit && isRace && !drv.retired ? "text-yellow-400" : isRace ? "text-f1-muted" : drv.position === 1 ? "text-purple-400" : "text-f1-muted"}`}>
+                    {displayGap}
+                  </span>
+                )
+              )}
+
+              {/* Live sector indicators - fixed width (qualifying only) */}
+              {isQualifying && settings.showSectors && (
+                <span className="w-7 flex-shrink-0 flex items-center justify-center gap-[2px] mx-1">
+                  {[1, 2, 3].map((sn) => {
+                    const sec = drv.sectors?.find((s) => s.num === sn);
+                    const bg = sec
+                      ? sec.color === "purple" ? "bg-purple-500"
+                      : sec.color === "green" ? "bg-green-500"
+                      : "bg-yellow-500"
+                      : "bg-white/15";
+                    return (
+                      <span
+                        key={sn}
+                        className={`w-[6px] h-[14px] rounded-[1px] ${bg}`}
+                      />
+                    );
+                  })}
                 </span>
               )}
 
@@ -259,9 +279,44 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
                 <span className="w-9 flex-shrink-0 flex items-center justify-end gap-0.5 ml-1">
                   {drv.pit_prediction != null && (
                     <>
-                      <img src="/pit-return.png" alt="" className="w-3 h-3 opacity-50 invert" />
-                      <span className="text-[10px] font-bold text-f1-muted">
+                      <span className={`flex items-center gap-0.5 text-[10px] font-bold ${
+                        settings.showPitConfidence && drv.pit_prediction_margin != null
+                          ? drv.pit_prediction_margin < 1 ? "text-red-400"
+                          : drv.pit_prediction_margin < 2.5 ? "text-yellow-400"
+                          : "text-f1-muted"
+                          : "text-f1-muted"
+                      }`}>
+                        <svg className="w-4 h-4 opacity-70 -scale-y-100" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M9 14l-4-4 4-4" />
+                          <path d="M5 10h11a4 4 0 0 1 0 8h-1" />
+                        </svg>
                         P{drv.pit_prediction}
+                      </span>
+                    </>
+                  )}
+                </span>
+              )}
+
+              {/* Pit gaps (ahead / behind) stacked - race only, shown with pit prediction */}
+              {isRace && settings.showPitPrediction && settings.showPitFreeAir && (
+                <span className="w-9 flex-shrink-0 flex flex-col items-end leading-tight">
+                  {drv.pit_prediction != null && (
+                    <>
+                      <span className="text-[8px] font-bold text-f1-muted">
+                        {drv.pit_prediction_free_air != null
+                          ? `↑${drv.pit_prediction_free_air.toFixed(1)}s`
+                          : "—"}
+                      </span>
+                      <span className={`text-[8px] font-bold ${
+                        settings.showPitConfidence && drv.pit_prediction_margin != null
+                          ? drv.pit_prediction_margin < 1 ? "text-red-400"
+                          : drv.pit_prediction_margin < 2.5 ? "text-yellow-400"
+                          : "text-f1-muted"
+                          : "text-f1-muted"
+                      }`}>
+                        {drv.pit_prediction_margin != null
+                          ? `↓${drv.pit_prediction_margin.toFixed(1)}s`
+                          : "—"}
                       </span>
                     </>
                   )}

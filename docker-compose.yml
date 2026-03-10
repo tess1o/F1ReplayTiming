@@ -1,0 +1,29 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - FRONTEND_URL=http://localhost:3000
+      - DATA_DIR=/data
+      # Optional - uncomment to enable features
+      # - OPENROUTER_API_KEY=your-key-here  # enables photo/screenshot sync (manual entry sync works without this)
+      # - AUTH_ENABLED=true
+      # - AUTH_PASSPHRASE=your-passphrase
+    volumes:
+      - f1data:/data
+      - f1cache:/data/fastf1-cache
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  f1data:
+  f1cache:

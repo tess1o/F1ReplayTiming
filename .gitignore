@@ -12,6 +12,7 @@ frontend/out/
 # Data/cache
 .fastf1-cache/
 /data/
+backend/data/sessions/
 
 # Environment
 .env

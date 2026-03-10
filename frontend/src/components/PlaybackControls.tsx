@@ -28,6 +28,8 @@ interface Props {
   onSeekToLap?: (lap: number) => void;
   isRace?: boolean;
   onSyncPhoto?: () => void;
+  onPiP?: () => void;
+  pipActive?: boolean;
   qualiPhase?: QualiPhase | null;
   qualiPhases?: QualiPhaseInfo[];
 }
@@ -49,6 +51,8 @@ export default function PlaybackControls({
   onSeekToLap,
   isRace,
   onSyncPhoto,
+  onPiP,
+  pipActive,
   qualiPhase,
   qualiPhases,
 }: Props) {
@@ -112,7 +116,7 @@ export default function PlaybackControls({
   return (
     <div className="bg-f1-card border-t border-f1-border fixed bottom-0 left-0 right-0 z-40 sm:relative sm:z-auto">
       {/* Mobile: compact bar always visible */}
-      <div className="sm:hidden px-3 pt-2 pb-4" style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom, 1rem))" }}>
+      <div className="sm:hidden px-3 pt-2 pb-4" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom, 0.5rem))" }}>
         <div className="mb-2">{progressBar}</div>
         <div className="flex items-center gap-2">
           {playPauseBtn}
@@ -122,6 +126,18 @@ export default function PlaybackControls({
             {!isRace && qualiPhase && <span className="text-f1-muted ml-2">{qualiPhase.phase}</span>}
           </span>
           <span className="text-[10px] font-bold text-f1-muted">{speed}x</span>
+          {onPiP && (
+            <button
+              onClick={onPiP}
+              className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${pipActive ? "text-f1-red" : "text-f1-muted hover:text-white hover:bg-white/10"}`}
+              title="Picture-in-Picture"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="3" width="20" height="14" rx="2" />
+                <rect x="12" y="10" width="10" height="10" rx="1" fill="currentColor" opacity="0.3" />
+              </svg>
+            </button>
+          )}
           <button
             onClick={() => setExpanded(!expanded)}
             className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 transition-colors text-f1-muted"
@@ -135,7 +151,7 @@ export default function PlaybackControls({
 
       {/* Mobile: expanded controls */}
       {expanded && (
-        <div className="sm:hidden px-3 space-y-2 border-t border-f1-border/50 pt-2 pb-4" style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom, 1rem))" }}>
+        <div className="sm:hidden px-3 space-y-2 border-t border-f1-border/50 pt-2 pb-4" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom, 0.5rem))" }}>
           {/* Skip buttons */}
           <div className="flex items-center justify-center gap-1">
             {[...SKIP_OPTIONS].reverse().map(({ label, seconds }) => (
@@ -344,6 +360,24 @@ export default function PlaybackControls({
                 </select>
                 <span className="text-sm font-extrabold text-white">/{totalLaps}</span>
               </div>
+
+              {onPiP && (
+                <button
+                  onClick={onPiP}
+                  className={`px-3 py-1.5 rounded border transition-colors text-xs font-bold ${
+                    pipActive
+                      ? "border-f1-red text-f1-red hover:bg-f1-red/10"
+                      : "border-f1-border text-f1-muted hover:text-white hover:bg-white/10"
+                  }`}
+                  title="Picture-in-Picture"
+                >
+                  <svg className="w-4 h-4 inline-block mr-1 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2" />
+                    <rect x="12" y="10" width="10" height="10" rx="1" fill="currentColor" opacity="0.3" />
+                  </svg>
+                  PiP
+                </button>
+              )}
             </>
           ) : qualiPhase ? (
             <div className="flex items-end gap-4 ml-auto">
@@ -364,6 +398,23 @@ export default function PlaybackControls({
                   <span className="text-sm font-extrabold text-f1-muted tabular-nums">{formatTime(Math.max(0, totalTime - currentTime))}</span>
                 </div>
               )}
+              {onPiP && (
+                <button
+                  onClick={onPiP}
+                  className={`px-3 py-1.5 rounded border transition-colors text-xs font-bold ${
+                    pipActive
+                      ? "border-f1-red text-f1-red hover:bg-f1-red/10"
+                      : "border-f1-border text-f1-muted hover:text-white hover:bg-white/10"
+                  }`}
+                  title="Picture-in-Picture"
+                >
+                  <svg className="w-4 h-4 inline-block mr-1 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2" />
+                    <rect x="12" y="10" width="10" height="10" rx="1" fill="currentColor" opacity="0.3" />
+                  </svg>
+                  PiP
+                </button>
+              )}
             </div>
           ) : (
             <div className="flex items-center gap-4 ml-auto">
@@ -375,6 +426,23 @@ export default function PlaybackControls({
                 <span className="text-[10px] font-bold text-f1-muted uppercase block">Elapsed</span>
                 <span className="text-sm font-extrabold text-f1-muted tabular-nums">{formatTime(currentTime)}</span>
               </div>
+              {onPiP && (
+                <button
+                  onClick={onPiP}
+                  className={`px-3 py-1.5 rounded border transition-colors text-xs font-bold ${
+                    pipActive
+                      ? "border-f1-red text-f1-red hover:bg-f1-red/10"
+                      : "border-f1-border text-f1-muted hover:text-white hover:bg-white/10"
+                  }`}
+                  title="Picture-in-Picture"
+                >
+                  <svg className="w-4 h-4 inline-block mr-1 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2" />
+                    <rect x="12" y="10" width="10" height="10" rx="1" fill="currentColor" opacity="0.3" />
+                  </svg>
+                  PiP
+                </button>
+              )}
             </div>
           )}
         </div>

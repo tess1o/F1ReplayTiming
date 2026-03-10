@@ -31,6 +31,9 @@ export interface ReplayDriver {
   rpm: number | null;
   drs: number | null;
   pit_prediction: number | null;
+  pit_prediction_margin: number | null;
+  pit_prediction_free_air: number | null;
+  sectors: { num: number; color: "purple" | "green" | "yellow" }[] | null;
 }
 
 export interface WeatherData {

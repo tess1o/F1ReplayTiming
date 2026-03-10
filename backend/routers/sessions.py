@@ -4,7 +4,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Query, HTTPException
-from services.storage import get_json
+from services.storage import get_json, put_json
 from services.process import ensure_session_data
 
 logger = logging.getLogger(__name__)
@@ -84,6 +84,17 @@ async def list_events(year: int):
         return cached[0]
 
     data = _build_events(year)
+    if data is None:
+        # No schedule in storage — fetch from FastF1 and save for next time
+        try:
+            from services.f1_data import _get_season_events_sync
+            import asyncio
+            events = await asyncio.to_thread(_get_season_events_sync, year)
+            put_json(f"seasons/{year}/schedule.json", {"year": year, "events": events})
+            logger.info(f"Generated schedule for {year} on demand ({len(events)} events)")
+            data = _build_events(year)
+        except Exception as e:
+            logger.error(f"Failed to fetch schedule for {year}: {e}")
     if data is None:
         raise HTTPException(status_code=404, detail=f"No schedule data for {year}")
 

@@ -14,7 +14,7 @@ A web app that lets you replay past Formula 1 sessions with real timing data, ca
 - **Driver leaderboard** sourced from the official F1 live timing feed, showing position, gap to leader, tyre compound and age, tyre history, pit stop count, grid position changes, and fastest lap indicator
 - **Pit position prediction** (Beta) estimates where a driver would rejoin if they pitted now, using precomputed pit loss times per circuit with Safety Car and Virtual Safety Car adjustments
 - **Telemetry** for any driver showing speed, throttle, brake, gear, and DRS (2025 and earlier) plotted against track distance
-- **Broadcast sync** lets you match the replay to a live broadcast or recording, either by uploading a screenshot of the timing tower (using AI vision) or by manually entering gap times
+- **Broadcast sync** lets you match the replay to a recording of a session, either by uploading a screenshot of the timing tower (using AI vision) or by manually entering gap times
 - **Weather data** including air and track temperature, humidity, wind, and rainfall status
 - **Track status flags** for green, yellow, Safety Car, Virtual Safety Car, and red flag conditions
 - **Playback controls** with 0.5x to 20x speed, skip buttons (5s, 30s, 1m, 5m), lap jumping, and a progress bar
@@ -31,20 +31,56 @@ Session data is processed once and stored locally (or in R2 for remote access). 
 
 ## Self-Hosting Guide
 
-### Prerequisites
+### Option A: Docker (recommended)
+
+Requires [Docker](https://docs.docker.com/get-docker/) and Docker Compose.
+
+```bash
+git clone <repo-url>
+cd F1timing
+docker compose up
+```
+
+Open http://localhost:3000. Select any past session and it will be processed on demand.
+
+To enable optional features, edit the environment variables in `docker-compose.yml`:
+- `OPENROUTER_API_KEY` — enables the photo sync feature ([get a key](https://openrouter.ai/))
+- `AUTH_ENABLED` / `AUTH_PASSPHRASE` — restricts access with a passphrase
+
+Session data is persisted in a Docker volume, so it survives restarts.
+
+To pre-process session data in bulk (instead of on demand), use the precompute script:
+
+```bash
+# Process a specific race weekend
+docker compose exec backend python precompute.py 2026 --round 1
+
+# Process only the race session (skip practice/qualifying)
+docker compose exec backend python precompute.py 2026 --round 1 --session R
+
+# Process an entire season (will take several hours)
+docker compose exec backend python precompute.py 2025 --skip-existing
+
+# Process multiple years
+docker compose exec backend python precompute.py 2024 2025 --skip-existing
+```
+
+### Option B: Manual setup
+
+#### Prerequisites
 
 - Python 3.10+
 - Node.js 18+
-- An [OpenRouter](https://openrouter.ai/) API key (optional, for the photo sync feature)
+- An [OpenRouter](https://openrouter.ai/) API key (optional, enables photo/screenshot sync — manual entry sync works without this)
 
-### 1. Clone the repository
+#### 1. Clone the repository
 
 ```bash
 git clone <repo-url>
 cd F1timing
 ```
 
-### 2. Configure environment variables
+#### 2. Configure environment variables
 
 **Backend** (`backend/.env`):
 ```
@@ -52,7 +88,7 @@ FRONTEND_URL=http://localhost:3000
 PORT=8000
 DATA_DIR=./data
 
-# Optional - enables the photo sync feature
+# Optional - enables photo/screenshot sync (manual entry sync works without this)
 # Get a key from https://openrouter.ai/
 OPENROUTER_API_KEY=
 
@@ -67,7 +103,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
 
-### 3. Install dependencies and start
+#### 3. Install dependencies and start
 
 ```bash
 # Backend
@@ -85,7 +121,7 @@ npm run dev
 
 Open http://localhost:3000.
 
-### 4. Getting session data
+#### 4. Getting session data
 
 There are two ways to get session data into the app:
 
@@ -121,9 +157,9 @@ python precompute.py 2024 2025 --skip-existing
 
 The app also includes a background task that automatically checks for and processes new session data on race weekends (Friday–Monday).
 
-### Photo Sync Feature
+#### Photo Sync Feature
 
-The app includes a feature that lets you take a photo of your F1 TV broadcast's timing tower and sync the replay to that point. This requires an API key from [OpenRouter](https://openrouter.ai/) set as `OPENROUTER_API_KEY`. It uses a vision model (Gemini Flash) to read the leaderboard from the photo. Any OpenRouter-compatible API key will work.
+The broadcast sync feature lets you match the replay to a recording of a session. You can always sync manually by entering gap times directly. To also enable photo/screenshot sync (where the app reads the timing tower from an image), set an [OpenRouter](https://openrouter.ai/) API key as `OPENROUTER_API_KEY`. It uses a vision model (Gemini Flash) to read the leaderboard from the photo. Any OpenRouter-compatible API key will work.
 
 ## Acknowledgements
 
