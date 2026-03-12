@@ -47,8 +47,8 @@ def _add_pit_predictions(frame: dict, pit_loss_green: float, pit_loss_sc: float,
     status = frame.get("status", "green")
     lap = frame.get("lap", 0)
 
-    # Don't show before lap 15
-    if lap < 15:
+    # Don't show before lap 5
+    if lap < 5:
         return
 
     # Select pit loss based on track status

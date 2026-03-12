@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from auth import is_auth_enabled, verify_token
-from routers import sessions, track, laps, results, replay, telemetry, sync
+from routers import sessions, track, laps, results, replay, telemetry, sync, live, live_status
 from routers import auth_routes
 from services.auto_precompute import auto_precompute_loop
 
@@ -43,7 +43,7 @@ app = FastAPI(
 # CORS
 frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 extra_origins = [o.strip() for o in os.environ.get("EXTRA_ORIGINS", "").split(",") if o.strip()]
-allowed_origins = [frontend_url, "http://localhost:3000"] + extra_origins
+allowed_origins = [frontend_url, "http://localhost:3000", "http://localhost:3001"] + extra_origins
 # Ensure https variants are included for Railway/production URLs
 for origin in list(allowed_origins):
     if origin.startswith("https://"):
@@ -93,6 +93,8 @@ app.include_router(results.router)
 app.include_router(replay.router)
 app.include_router(telemetry.router)
 app.include_router(sync.router)
+app.include_router(live.router)
+app.include_router(live_status.router)
 
 
 @app.get("/api/health")

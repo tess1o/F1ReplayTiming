@@ -51,6 +51,14 @@ export interface QualiPhase {
   remaining: number;
 }
 
+export interface RCMessage {
+  message: string;
+  category: string;
+  timestamp: number;
+  lap?: number;
+  racing_number?: string;
+}
+
 export interface ReplayFrame {
   timestamp: number;
   lap: number;
@@ -60,6 +68,7 @@ export interface ReplayFrame {
   status: string;
   weather?: WeatherData;
   quali_phase?: QualiPhase;
+  rc_messages?: RCMessage[];
 }
 
 export interface QualiPhaseInfo {
@@ -139,6 +148,7 @@ export function useReplaySocket(year: number, round: number, sessionType: string
               status: msg.status,
               weather: msg.weather,
               quali_phase: msg.quali_phase,
+              rc_messages: msg.rc_messages,
             },
           }));
           break;

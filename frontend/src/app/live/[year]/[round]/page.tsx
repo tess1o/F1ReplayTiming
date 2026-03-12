@@ -3,16 +3,13 @@
 import { useState, useEffect } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { useApi } from "@/hooks/useApi";
-import { useReplaySocket } from "@/hooks/useReplaySocket";
+import { useLiveSocket } from "@/hooks/useLiveSocket";
 import { useSettings } from "@/hooks/useSettings";
+import { apiFetch } from "@/lib/api";
 import SessionBanner from "@/components/SessionBanner";
 import TrackCanvas from "@/components/TrackCanvas";
 import Leaderboard from "@/components/Leaderboard";
-import PlaybackControls from "@/components/PlaybackControls";
-import TelemetryChart from "@/components/TelemetryChart";
-import SyncPhoto from "@/components/SyncPhoto";
 import PiPWindow from "@/components/PiPWindow";
-import type { SectorOverlay } from "@/lib/trackRenderer";
 
 interface TrackData {
   track_points: { x: number; y: number }[];
@@ -37,28 +34,28 @@ interface SessionData {
   }>;
 }
 
-export default function ReplayPage() {
+export default function LivePage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const year = Number(params.year);
   const round = Number(params.round);
   const sessionType = searchParams.get("type") || "R";
+  const speed = Number(searchParams.get("speed") || "10");
+  const devMode = searchParams.get("dev") === "1";
 
   const [selectedDrivers, setSelectedDrivers] = useState<string[]>([]);
-  const [showTelemetry, setShowTelemetry] = useState(false);
-  const [showSyncPhoto, setShowSyncPhoto] = useState(false);
-  const [pipActive, setPipActive] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [mobileTrackOpen, setMobileTrackOpen] = useState(true);
   const [mobileLeaderboardOpen, setMobileLeaderboardOpen] = useState(true);
-  const [mobileTelemetryOpen, setMobileTelemetryOpen] = useState(false);
   const [leaderboardScale, setLeaderboardScale] = useState(1);
+  const [delayOffset, setDelayOffset] = useState(0);
+  const [showDelaySlider, setShowDelaySlider] = useState(false);
+  const [checkingReplay, setCheckingReplay] = useState(false);
+  const [replayCheckResult, setReplayCheckResult] = useState<string | null>(null);
+  const [pipActive, setPipActive] = useState(false);
   const [pipTrackOpen, setPipTrackOpen] = useState(true);
-  const [pipTelemetryOpen, setPipTelemetryOpen] = useState(false);
   const [pipRcOpen, setPipRcOpen] = useState(true);
   const [pipLeaderboardOpen, setPipLeaderboardOpen] = useState(true);
-  const [showSectorOverlay, setShowSectorOverlay] = useState(false);
-  const [sectorFocusDriver, setSectorFocusDriver] = useState<string | null>(null);
   const [rcPanelOpen, setRcPanelOpen] = useState(false);
   const [rcPanelSize, setRcPanelSize] = useState<"sm" | "md" | "lg">("md");
 
@@ -75,12 +72,12 @@ export default function ReplayPage() {
         return prev.filter((d) => d !== abbr);
       }
       if (prev.length >= 2) {
-        // Replace the oldest selection
         return [prev[1], abbr];
       }
       return [...prev, abbr];
     });
   }
+
   const { settings, update: updateSetting } = useSettings();
 
   const { data: sessionData, loading: sessionLoading, error: sessionError } = useApi<SessionData>(
@@ -91,21 +88,35 @@ export default function ReplayPage() {
     `/api/sessions/${year}/${round}/track?type=${sessionType}`,
   );
 
-  const replay = useReplaySocket(year, round, sessionType);
+  const live = useLiveSocket(year, round, sessionType, speed, delayOffset);
 
   const isLoading = sessionLoading || trackLoading;
   const dataError = sessionError || trackError;
 
-  // Show loading until session + track + replay frames are all ready
-  if (isLoading || (!dataError && replay.loading)) {
+  const isRace = sessionType === "R" || sessionType === "S";
+  const isQualifying = sessionType === "Q" || sessionType === "SQ";
+
+  // Show loading until live socket is ready
+  if (isLoading || (!dataError && live.loading)) {
     return (
       <div className="min-h-screen bg-f1-dark flex items-center justify-center">
         <div className="text-center">
           <div className="inline-block w-12 h-12 border-3 border-f1-muted border-t-f1-red rounded-full animate-spin mb-6" />
-          <p className="text-f1-muted text-lg">Loading session data...</p>
-          <p className="text-f1-muted text-sm mt-2">
-            First load may take up to 60 seconds while data is fetched
-          </p>
+          <p className="text-f1-muted text-lg">Connecting to live timing...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (live.error) {
+    return (
+      <div className="min-h-screen bg-f1-dark flex items-center justify-center">
+        <div className="text-center max-w-md">
+          <p className="text-red-400 text-lg font-bold mb-2">Live Timing Unavailable</p>
+          <p className="text-f1-muted mb-6 text-sm">{live.error}</p>
+          <a href="/" className="inline-block px-4 py-2 bg-f1-red text-white font-bold text-sm rounded hover:bg-red-700 transition-colors">
+            Back to session picker
+          </a>
         </div>
       </div>
     );
@@ -116,12 +127,7 @@ export default function ReplayPage() {
       <div className="min-h-screen bg-f1-dark flex items-center justify-center">
         <div className="text-center max-w-md">
           <p className="text-red-400 text-lg font-bold mb-2">Session Unavailable</p>
-          <p className="text-f1-muted mb-1">
-            Data for this session is not available yet.
-          </p>
-          <p className="text-f1-muted text-sm mb-6">
-            If the session just finished, data typically becomes available 1–2 hours after the chequered flag.
-          </p>
+          <p className="text-f1-muted mb-6">Data for this session is not available.</p>
           <a href="/" className="inline-block px-4 py-2 bg-f1-red text-white font-bold text-sm rounded hover:bg-red-700 transition-colors">
             Back to session picker
           </a>
@@ -130,49 +136,79 @@ export default function ReplayPage() {
     );
   }
 
+  // Session ended state
+  if (live.sessionEnded) {
+    async function checkReplayAvailable() {
+      setCheckingReplay(true);
+      setReplayCheckResult(null);
+      try {
+        await apiFetch(`/api/sessions/${year}/${round}?type=${sessionType}`);
+        // If the fetch succeeds, replay data is available — navigate
+        window.location.href = `/replay/${year}/${round}?type=${sessionType}`;
+      } catch {
+        setReplayCheckResult("Not available yet — data typically takes 15\u201330 minutes after session end.");
+        setCheckingReplay(false);
+      }
+    }
+
+    return (
+      <div className="min-h-screen bg-f1-dark flex items-center justify-center">
+        <div className="text-center max-w-md">
+          <div className="inline-block px-3 py-1 bg-f1-card border border-f1-border rounded text-xs font-bold text-f1-muted uppercase mb-4">
+            Session Ended
+          </div>
+          <p className="text-white text-lg font-bold mb-2">
+            {sessionData?.event_name || "Session"} — {sessionType}
+          </p>
+          <p className="text-f1-muted mb-6 text-sm">
+            Full replay with track positions and telemetry will be available shortly.
+          </p>
+          {replayCheckResult && (
+            <p className="text-yellow-400 text-sm mb-4">{replayCheckResult}</p>
+          )}
+          <div className="flex gap-3 justify-center">
+            <a href="/" className="inline-block px-4 py-2 bg-f1-card border border-f1-border text-white font-bold text-sm rounded hover:bg-f1-border transition-colors">
+              Back to sessions
+            </a>
+            <button
+              onClick={checkReplayAvailable}
+              disabled={checkingReplay}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-f1-red text-white font-bold text-sm rounded hover:bg-red-700 transition-colors disabled:opacity-50"
+            >
+              {checkingReplay && (
+                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              )}
+              Check for replay data
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const trackPoints = trackData?.track_points || [];
   const rotation = trackData?.rotation || 0;
-  const drivers = replay.frame?.drivers || [];
-  const trackStatus = replay.frame?.status || "green";
-  const weather = replay.frame?.weather;
-  const isRace = sessionType === "R" || sessionType === "S";
-  const isQualifying = sessionType === "Q" || sessionType === "SQ";
+  const drivers = live.frame?.drivers || [];
+  const trackStatus = live.frame?.status || "green";
+  const weather = live.frame?.weather;
 
-  // Compute sector overlay for track map
-  const SECTOR_HEX: Record<string, string> = { purple: "#A855F7", green: "#22C55E", yellow: "#EAB308" };
-  const DEFAULT_SECTOR = "#3A3A4A";
-  const sectorOverlay: SectorOverlay | null = (() => {
-    if (!isQualifying || !showSectorOverlay || !trackData?.sector_boundaries) return null;
-    const target = (sectorFocusDriver && selectedDrivers.includes(sectorFocusDriver))
-      ? sectorFocusDriver
-      : selectedDrivers[0] ?? null;
-    if (!target) return null;
-    const drv = drivers.find((d) => d.abbr === target);
-    const sectors = drv?.sectors;
-    return {
-      boundaries: trackData.sector_boundaries,
-      colors: {
-        s1: SECTOR_HEX[sectors?.find((s) => s.num === 1)?.color ?? ""] ?? DEFAULT_SECTOR,
-        s2: SECTOR_HEX[sectors?.find((s) => s.num === 2)?.color ?? ""] ?? DEFAULT_SECTOR,
-        s3: SECTOR_HEX[sectors?.find((s) => s.num === 3)?.color ?? ""] ?? DEFAULT_SECTOR,
-      },
-    };
-  })();
+  // Check if we have any position data for the track map
+  const hasPositionData = drivers.some((d) => d.x !== 0 || d.y !== 0);
 
-  // Calculate leaderboard width based on active columns
+  // Calculate leaderboard width
   const leaderboardWidth = (() => {
-    let w = 106; // base: position(24) + team bar(12) + driver(30) + flags(16) + padding(16) + right padding(8)
+    let w = 106;
     if (settings.showTeamAbbr) w += 28;
-    if (!isRace) w += 18; // pit indicator (P box + margin)
+    if (!isRace) w += 18;
     if (isRace && settings.showGridChange) w += 24;
     if (settings.showGapToLeader) w += 56;
-    if (isQualifying && settings.showSectors) w += 36; // sector indicators (28 + 8 margin)
+    if (isQualifying && settings.showSectors) w += 36;
     if (isRace && settings.showPitStops) w += 24;
     if (isRace && settings.showTyreHistory) w += 36;
     if (settings.showTyreType) w += 24;
     if (settings.showTyreAge) w += 20;
-    if (isRace && settings.showPitPrediction) w += 40; // pit prediction
-    if (isRace && settings.showPitPrediction && settings.showPitFreeAir) w += 36; // pit gaps (ahead/behind)
+    if (isRace && settings.showPitPrediction) w += 40;
+    if (isRace && settings.showPitPrediction && settings.showPitFreeAir) w += 36;
     return w;
   })();
 
@@ -189,11 +225,19 @@ export default function ReplayPage() {
           settings={settings}
           onSettingChange={updateSetting}
           weather={weather}
+          extraActions={
+            <a
+              href="/"
+              className="px-2 py-1 sm:px-3 rounded text-[10px] sm:text-xs font-bold text-f1-muted hover:text-white hover:bg-white/10 transition-colors"
+            >
+              Exit
+            </a>
+          }
         />
       )}
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col sm:flex-row min-h-0 overflow-y-auto sm:overflow-hidden pb-20 sm:pb-0">
+      <div className="flex-1 flex flex-col sm:flex-row min-h-0 overflow-y-auto sm:overflow-hidden">
         {/* Track section */}
         <div className="sm:flex-1 relative">
           {/* Mobile section header */}
@@ -236,8 +280,8 @@ export default function ReplayPage() {
                 </div>
               )}
 
-              {/* Race Control toggle */}
-              <div className="absolute top-3 right-3 z-10">
+              {/* LIVE badge + Race Control toggle */}
+              <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
                 <button
                   onClick={() => setRcPanelOpen(!rcPanelOpen)}
                   className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-bold transition-colors ${
@@ -252,6 +296,10 @@ export default function ReplayPage() {
                   </svg>
                   RC
                 </button>
+                <div className="flex items-center gap-1.5 px-2 py-1 bg-red-600 rounded text-xs font-extrabold text-white uppercase">
+                  <span className="w-2 h-2 bg-white rounded-full animate-pulse" />
+                  LIVE
+                </div>
               </div>
 
               {/* Race Control Messages panel */}
@@ -288,15 +336,13 @@ export default function ReplayPage() {
                     </div>
                   </div>
                   <div className="flex-1 overflow-y-auto divide-y divide-f1-border/50">
-                    {(() => {
-                      const allMsgs = replay.frame?.rc_messages || [];
-                      const msgs = rcPanelSize === "sm" ? allMsgs.slice(0, 1) : allMsgs;
-                      if (allMsgs.length === 0) return <p className="text-f1-muted text-xs p-3 text-center">No race control messages yet</p>;
-                      return msgs.map((rc, i) => {
-                        const upper = rc.message.toUpperCase();
-                        const isInvestigation = upper.includes("INVESTIGATION") || upper.includes("NOTED");
-                        const isPenalty = upper.includes("PENALTY") && !upper.includes("NO FURTHER");
-                        const isCleared = upper.includes("NO FURTHER") || upper.includes("NO INVESTIGATION");
+                    {(live.rcMessages || []).length === 0 ? (
+                      <p className="text-f1-muted text-xs p-3 text-center">No race control messages yet</p>
+                    ) : (
+                      (rcPanelSize === "sm" ? (live.rcMessages || []).slice(0, 1) : (live.rcMessages || [])).map((rc, i) => {
+                        const isInvestigation = rc.message.toUpperCase().includes("INVESTIGATION") || rc.message.toUpperCase().includes("NOTED");
+                        const isPenalty = rc.message.toUpperCase().includes("PENALTY") && !rc.message.toUpperCase().includes("NO FURTHER");
+                        const isCleared = rc.message.toUpperCase().includes("NO FURTHER") || rc.message.toUpperCase().includes("NO INVESTIGATION");
                         return (
                           <div key={i} className="px-3 py-2">
                             <div className="flex items-start gap-2">
@@ -305,127 +351,60 @@ export default function ReplayPage() {
                               }`} />
                               <div className="min-w-0">
                                 <p className="text-[11px] text-white leading-tight">{rc.message}</p>
-                                {rc.lap && <span className="text-[9px] text-f1-muted">Lap {rc.lap}</span>}
+                                {rc.lap && (
+                                  <span className="text-[9px] text-f1-muted">Lap {rc.lap}</span>
+                                )}
                               </div>
                             </div>
                           </div>
                         );
-                      });
-                    })()}
+                      })
+                    )}
                   </div>
                 </div>
               )}
 
-              <TrackCanvas
-                trackPoints={trackPoints}
-                rotation={rotation}
-                trackStatus={trackStatus}
-                drivers={drivers.filter((d) => !d.retired && !d.no_timing && (d.x !== 0 || d.y !== 0)).map((d) => ({
-                  abbr: d.abbr,
-                  x: d.x,
-                  y: d.y,
-                  color: d.color,
-                  position: d.position,
-                }))}
-                highlightedDrivers={selectedDrivers}
-                playbackSpeed={replay.speed}
-                showDriverNames={settings.showDriverNames}
-                sectorOverlay={sectorOverlay}
-              />
-
-              {/* Telemetry overlay - desktop only */}
-              {!isMobile && showTelemetry && (
-                <div className="absolute bottom-2 left-8 z-10">
-                  {selectedDrivers.map((abbr) => {
-                    const drv = drivers.find((d) => d.abbr === abbr) || null;
-                    return <TelemetryChart key={abbr} visible driver={drv} year={year} isQualifying={isQualifying} />;
-                  })}
-                  {selectedDrivers.length === 0 && (
-                    <TelemetryChart visible driver={null} year={year} />
-                  )}
-                </div>
-              )}
-
-              {/* Sector overlay info panel - desktop qualifying only */}
-              {!isMobile && isQualifying && showSectorOverlay && selectedDrivers.length === 0 && (
-                <div className="absolute bottom-2 left-8 z-10">
-                  <div className="bg-f1-card/90 border border-f1-border rounded px-4 py-1.5 backdrop-blur-sm">
-                    <p className="text-[10px] text-f1-muted">
-                      Select a driver to view sectors
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* Sector overlay toggle - desktop qualifying only */}
-              {!isMobile && isQualifying && trackData?.sector_boundaries && (
-                <div className="absolute bottom-2 right-36 z-20 flex items-center gap-1">
-                  {showSectorOverlay && selectedDrivers.length === 2 && (
-                    selectedDrivers.map((abbr) => {
-                      const drv = drivers.find((d) => d.abbr === abbr);
-                      const isActive = sectorFocusDriver === abbr || (!sectorFocusDriver && abbr === selectedDrivers[0]);
-                      return (
-                        <button
-                          key={abbr}
-                          onClick={() => setSectorFocusDriver(abbr)}
-                          className={`px-1.5 py-1 border rounded text-[10px] font-bold transition-colors ${
-                            isActive
-                              ? "bg-purple-500/20 border-purple-500/50 text-purple-300"
-                              : "bg-f1-card border-f1-border text-f1-muted hover:text-white"
-                          }`}
-                        >
-                          <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{ backgroundColor: drv?.color }} />
-                          {abbr}
-                        </button>
-                      );
-                    })
-                  )}
-                  <button
-                    onClick={() => setShowSectorOverlay(!showSectorOverlay)}
-                    className={`px-2 py-1 border rounded text-[10px] font-bold transition-colors ${
-                      showSectorOverlay
-                        ? "bg-purple-500/20 border-purple-500/50 text-purple-300 hover:text-purple-200"
-                        : "bg-f1-card border-f1-border text-f1-muted hover:text-white"
-                    }`}
-                  >
-                    {showSectorOverlay ? "Hide" : "Show"} Sectors
-                  </button>
-                </div>
-              )}
-
-              {/* Telemetry toggle - desktop only */}
-              {!isMobile && (
-                <button
-                  onClick={() => setShowTelemetry(!showTelemetry)}
-                  className="absolute bottom-2 right-2 z-20 px-2 py-1 bg-f1-card border border-f1-border rounded text-[10px] font-bold text-f1-muted hover:text-white transition-colors"
-                >
-                  {showTelemetry ? "Hide" : "Show"} Telemetry
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Telemetry section - mobile only, collapsible like leaderboard */}
-        <div className="sm:hidden">
-          <button
-            onClick={() => setMobileTelemetryOpen(!mobileTelemetryOpen)}
-            className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border"
-          >
-            <span className="text-[11px] font-bold text-f1-muted uppercase tracking-wider">Telemetry</span>
-            <svg className={`w-4 h-4 text-f1-muted transition-transform ${mobileTelemetryOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-          {mobileTelemetryOpen && (
-            <div className="bg-f1-card px-3 py-2 space-y-1">
-              {selectedDrivers.length > 0 ? (
-                selectedDrivers.map((abbr) => {
-                  const drv = drivers.find((d) => d.abbr === abbr) || null;
-                  return <TelemetryChart key={abbr} visible driver={drv} year={year} isQualifying={isQualifying} />;
-                })
+              {hasPositionData ? (
+                <TrackCanvas
+                  trackPoints={trackPoints}
+                  rotation={rotation}
+                  trackStatus={trackStatus}
+                  drivers={drivers.filter((d) => !d.retired && !d.no_timing && (d.x !== 0 || d.y !== 0)).map((d) => ({
+                    abbr: d.abbr,
+                    x: d.x,
+                    y: d.y,
+                    color: d.color,
+                    position: d.position,
+                  }))}
+                  highlightedDrivers={selectedDrivers}
+                  playbackSpeed={1}
+                  showDriverNames={settings.showDriverNames}
+                />
               ) : (
-                <TelemetryChart visible driver={null} year={year} />
+                <div className="h-full flex items-center justify-center">
+                  {trackPoints.length > 0 ? (
+                    <div className="relative w-full h-full">
+                      <TrackCanvas
+                        trackPoints={trackPoints}
+                        rotation={rotation}
+                        trackStatus={trackStatus}
+                        drivers={[]}
+                        highlightedDrivers={[]}
+                        playbackSpeed={1}
+                        showDriverNames={false}
+                      />
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="bg-f1-card/90 border border-f1-border rounded-lg px-6 py-3 backdrop-blur-sm">
+                          <p className="text-f1-muted text-sm text-center">
+                            Track positions available in replay after session
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-f1-muted text-sm">Track data not available</p>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -453,7 +432,7 @@ export default function ReplayPage() {
                 highlightedDrivers={selectedDrivers}
                 onDriverClick={handleDriverClick}
                 settings={settings}
-                currentTime={replay.frame?.timestamp || 0}
+                currentTime={live.frame?.timestamp || 0}
                 isRace={isRace}
                 isQualifying={isQualifying}
                 onScaleChange={setLeaderboardScale}
@@ -463,33 +442,135 @@ export default function ReplayPage() {
         )}
       </div>
 
-      {/* Playback controls */}
-      <PlaybackControls
-        playing={replay.playing}
-        speed={replay.speed}
-        currentTime={replay.frame?.timestamp || 0}
-        totalTime={replay.totalTime}
-        currentLap={replay.frame?.lap || 0}
-        totalLaps={replay.totalLaps}
-        finished={replay.finished}
-        showSessionTime={settings.showSessionTime}
-        onPlay={replay.play}
-        onPause={replay.pause}
-        onSpeedChange={replay.setSpeed}
-        onSeek={replay.seek}
-        onSeekToLap={replay.seekToLap}
-        onReset={replay.reset}
-        isRace={isRace}
-        onSyncPhoto={() => setShowSyncPhoto(true)}
-        onPiP={!isMobile ? () => setPipActive(true) : undefined}
-        pipActive={pipActive}
-        qualiPhase={replay.frame?.quali_phase}
-        qualiPhases={replay.qualiPhases}
-      />
+      {/* Live info bar (replaces playback controls) */}
+      <div className="flex-shrink-0 bg-f1-card border-t border-f1-border px-4 py-2 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          {/* Lap counter */}
+          {isRace && live.frame && (
+            <div className="text-sm">
+              <span className="text-f1-muted">Lap </span>
+              <span className="text-white font-bold">{live.frame.lap}</span>
+              {live.frame.total_laps > 0 && (
+                <span className="text-f1-muted">/{live.frame.total_laps}</span>
+              )}
+            </div>
+          )}
 
-      {/* Document PiP window — visible across tabs */}
+          {/* Dev controls (test replayer only — add ?dev=1 to URL) */}
+          {devMode && live.frame && (
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-mono text-f1-muted">
+                {(() => {
+                  const t = live.frame.timestamp;
+                  const h = Math.floor(t / 3600);
+                  const m = Math.floor((t % 3600) / 60);
+                  const s = Math.floor(t % 60);
+                  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+                })()}
+              </span>
+              <div className="flex items-center gap-1">
+                {[60, 300, 600, 1800].map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => live.send(JSON.stringify({ command: "skip", seconds: s }))}
+                    className="px-1.5 py-0.5 bg-f1-dark border border-f1-border rounded text-[10px] font-bold text-f1-muted hover:text-white hover:border-f1-muted transition-colors"
+                  >
+                    +{s >= 60 ? `${s / 60}m` : `${s}s`}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Qualifying phase */}
+          {isQualifying && live.frame?.quali_phase && (
+            <div className="text-sm">
+              <span className="text-white font-bold">{live.frame.quali_phase.phase}</span>
+              {live.frame.quali_phase.remaining > 0 && (
+                <span className="text-f1-muted ml-2">
+                  {Math.floor(live.frame.quali_phase.remaining / 60)}:
+                  {String(Math.floor(live.frame.quali_phase.remaining % 60)).padStart(2, "0")}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3">
+          {/* Broadcast delay */}
+          <div className="relative">
+            <button
+              onClick={() => setShowDelaySlider(!showDelaySlider)}
+              className={`px-2 py-1 border rounded text-[10px] font-bold transition-colors ${
+                delayOffset !== 0
+                  ? "bg-blue-500/20 border-blue-500/50 text-blue-300"
+                  : "bg-f1-dark border-f1-border text-f1-muted hover:text-white"
+              }`}
+            >
+              Delay: {delayOffset > 0 ? "+" : ""}{delayOffset}s
+            </button>
+            {showDelaySlider && (
+              <div className="absolute bottom-full right-0 mb-2 bg-f1-card border border-f1-border rounded-lg p-3 shadow-xl z-50 w-56">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[10px] font-bold text-f1-muted uppercase">Broadcast Delay</span>
+                  <button
+                    onClick={() => { setDelayOffset(0); }}
+                    className="text-[10px] text-f1-muted hover:text-white"
+                  >
+                    Reset
+                  </button>
+                </div>
+                <input
+                  type="range"
+                  min={-10}
+                  max={10}
+                  step={0.5}
+                  value={delayOffset}
+                  onChange={(e) => setDelayOffset(Number(e.target.value))}
+                  className="w-full h-1 bg-f1-border rounded-lg appearance-none cursor-pointer accent-blue-500"
+                />
+                <div className="flex justify-between text-[9px] text-f1-muted mt-1">
+                  <span>-10s</span>
+                  <span>0</span>
+                  <span>+10s</span>
+                </div>
+                <p className="text-[9px] text-f1-muted mt-2">
+                  Adjust to sync with your broadcast feed
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Live indicator + PiP */}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+              <span className="text-xs font-bold text-red-400 uppercase">Live</span>
+            </div>
+            {!isMobile && (
+              <button
+                onClick={() => setPipActive(!pipActive)}
+                className={`px-3 py-1.5 rounded border transition-colors text-xs font-bold ${
+                  pipActive
+                    ? "border-f1-red text-f1-red hover:bg-f1-red/10"
+                    : "border-f1-border text-f1-muted hover:text-white hover:bg-white/10"
+                }`}
+                title="Picture-in-Picture"
+              >
+                <svg className="w-4 h-4 inline-block mr-1 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="3" width="20" height="14" rx="2" />
+                  <rect x="12" y="10" width="10" height="10" rx="1" fill="currentColor" opacity="0.3" />
+                </svg>
+                PiP
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* PiP window */}
       {pipActive && !isMobile && (
-        <PiPWindow onClose={() => setPipActive(false)} width={400} height={780}>
+        <PiPWindow onClose={() => setPipActive(false)} width={400} height={720}>
           <div className="flex flex-col h-full bg-f1-dark">
             {/* PiP Track Map */}
             <div>
@@ -531,17 +612,9 @@ export default function ReplayPage() {
                     trackPoints={trackPoints}
                     rotation={rotation}
                     trackStatus={trackStatus}
-                    drivers={drivers.filter((d) => !d.retired && !d.no_timing && (d.x !== 0 || d.y !== 0)).map((d) => ({
-                      abbr: d.abbr,
-                      x: d.x,
-                      y: d.y,
-                      color: d.color,
-                      position: d.position,
-                    }))}
+                    drivers={[]}
                     highlightedDrivers={selectedDrivers}
-                    playbackSpeed={replay.speed}
                     showDriverNames={settings.showDriverNames}
-                    sectorOverlay={sectorOverlay}
                   />
                 </div>
               )}
@@ -559,7 +632,7 @@ export default function ReplayPage() {
                 </svg>
               </button>
               {pipRcOpen && (() => {
-                const latest = (replay.frame?.rc_messages || [])[0];
+                const latest = (live.rcMessages || [])[0];
                 if (!latest) return <p className="text-f1-muted text-xs px-3 py-2">No messages yet</p>;
                 const upper = latest.message.toUpperCase();
                 const isPenalty = upper.includes("PENALTY") && !upper.includes("NO FURTHER");
@@ -581,31 +654,6 @@ export default function ReplayPage() {
               })()}
             </div>
 
-            {/* PiP Telemetry */}
-            <div className="border-t border-f1-border">
-              <button
-                onClick={() => setPipTelemetryOpen(!pipTelemetryOpen)}
-                className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border"
-              >
-                <span className="text-[11px] font-bold text-f1-muted uppercase tracking-wider">Telemetry</span>
-                <svg className={`w-4 h-4 text-f1-muted transition-transform ${pipTelemetryOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-              {pipTelemetryOpen && (
-                <div className="bg-f1-card px-3 py-2 space-y-1">
-                  {selectedDrivers.length > 0 ? (
-                    selectedDrivers.map((abbr) => {
-                      const drv = drivers.find((d) => d.abbr === abbr) || null;
-                      return <TelemetryChart key={abbr} visible driver={drv} year={year} isQualifying={isQualifying} />;
-                    })
-                  ) : (
-                    <TelemetryChart visible driver={null} year={year} />
-                  )}
-                </div>
-              )}
-            </div>
-
             {/* PiP Leaderboard */}
             <div className="flex-1 min-h-0 flex flex-col border-t border-f1-border">
               <button
@@ -624,7 +672,7 @@ export default function ReplayPage() {
                     highlightedDrivers={selectedDrivers}
                     onDriverClick={handleDriverClick}
                     settings={settings}
-                    currentTime={replay.frame?.timestamp || 0}
+                    currentTime={live.frame?.timestamp || 0}
                     isRace={isRace}
                     isQualifying={isQualifying}
                     compact
@@ -632,42 +680,8 @@ export default function ReplayPage() {
                 </div>
               )}
             </div>
-
-            {/* PiP Playback Controls */}
-            <div className="flex-shrink-0">
-              <PlaybackControls
-                playing={replay.playing}
-                speed={replay.speed}
-                currentTime={replay.frame?.timestamp || 0}
-                totalTime={replay.totalTime}
-                currentLap={replay.frame?.lap || 0}
-                totalLaps={replay.totalLaps}
-                finished={replay.finished}
-                showSessionTime={settings.showSessionTime}
-                onPlay={replay.play}
-                onPause={replay.pause}
-                onSpeedChange={replay.setSpeed}
-                onSeek={replay.seek}
-                onSeekToLap={replay.seekToLap}
-                onReset={replay.reset}
-                isRace={isRace}
-                qualiPhase={replay.frame?.quali_phase}
-                qualiPhases={replay.qualiPhases}
-              />
-            </div>
           </div>
         </PiPWindow>
-      )}
-
-      {/* Sync with photo modal */}
-      {showSyncPhoto && (
-        <SyncPhoto
-          year={year}
-          round={round}
-          sessionType={sessionType}
-          onSync={(timestamp) => replay.seek(timestamp)}
-          onClose={() => setShowSyncPhoto(false)}
-        />
       )}
     </div>
   );

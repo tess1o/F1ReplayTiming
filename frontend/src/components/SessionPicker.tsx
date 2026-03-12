@@ -9,6 +9,17 @@ interface SessionEntry {
   available: boolean;
 }
 
+interface LiveSessionInfo {
+  year: number;
+  round_number: number;
+  event_name: string;
+  country: string;
+  session_name: string;
+  session_type: string;
+  session_start: string;
+  pre_session: boolean;
+}
+
 interface Event {
   round_number: number;
   country: string;
@@ -107,6 +118,8 @@ export default function SessionPicker() {
   const { data: eventsData, loading: eventsLoading } = useApi<EventsResponse>(
     `/api/seasons/${year}/events`,
   );
+  const { data: liveData } = useApi<{ live: LiveSessionInfo | null }>("/api/live/status");
+  const liveSession = liveData?.live || null;
 
   const seasons = (seasonsData?.seasons || []).filter((s) => s <= currentYear);
   const events = eventsData?.events || [];
@@ -180,6 +193,23 @@ export default function SessionPicker() {
             {evt.sessions.map((session) => {
               const code = SESSION_LABELS[session.name];
               if (!code) return null;
+              const isLive = liveSession?.round_number === evt.round_number && liveSession?.session_type === code;
+              if (isLive) {
+                return (
+                  <a
+                    key={session.name}
+                    href={`/live/${year}/${evt.round_number}?type=${code}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setNavigating(true);
+                    }}
+                    className="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded hover:bg-red-700 transition-colors flex items-center gap-1.5"
+                  >
+                    <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+                    {session.name} — LIVE
+                  </a>
+                );
+              }
               if (session.available) {
                 return (
                   <a
@@ -300,6 +330,36 @@ export default function SessionPicker() {
           </div>
         ) : (
           <>
+            {/* Live session banner */}
+            {liveSession && (
+              <div className="mb-8">
+                <a
+                  href={`/live/${liveSession.year}/${liveSession.round_number}?type=${liveSession.session_type}`}
+                  onClick={() => setNavigating(true)}
+                  className="block bg-f1-card border border-red-500/50 rounded-xl overflow-hidden hover:border-red-500 transition-all group"
+                >
+                  <div className="px-4 py-4 flex items-center gap-4">
+                    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 rounded text-sm font-extrabold text-white uppercase flex-shrink-0">
+                      <span className="w-2 h-2 bg-white rounded-full animate-pulse" />
+                      LIVE
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-white font-bold group-hover:text-red-400 transition-colors">
+                        {COUNTRY_FLAGS[liveSession.country] && <span className="mr-1.5">{COUNTRY_FLAGS[liveSession.country]}</span>}
+                        {liveSession.event_name} — {liveSession.session_name}
+                      </h3>
+                      <p className="text-f1-muted text-sm">
+                        {liveSession.pre_session ? "Starting soon — click to open live timing" : "Session in progress — click to open live timing"}
+                      </p>
+                    </div>
+                    <svg className="w-5 h-5 text-f1-muted group-hover:text-white transition-colors flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                  </div>
+                </a>
+              </div>
+            )}
+
             {/* Latest event featured section */}
             {latestEvent && (
               <div className="mb-8">

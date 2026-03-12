@@ -566,48 +566,113 @@ def _get_driver_positions_by_time_sync(
     # Pre-compute race control flag events (investigation / penalty)
     # Each entry: (time_offset_seconds, abbr, flag_type)
     flag_events = []
+
+    # Build abbr lookup from 3-letter codes mentioned in message text
+    abbr_set = set(number_to_abbr.values())
+
+    def _extract_drivers_from_msg(msg_text: str, racing_num: str | None) -> list[str]:
+        """Extract driver abbreviations from RacingNumber field or message text."""
+        drivers = []
+        # Try RacingNumber field first
+        if racing_num and racing_num not in ("", "nan", "None", "0"):
+            abbr = number_to_abbr.get(racing_num) or number_to_abbr.get(racing_num.lstrip("0"))
+            if abbr:
+                drivers.append(abbr)
+        # Fallback: parse "CAR 23 (ALB)" or "CARS 6 (HAD) AND 87 (BEA)" from text
+        if not drivers:
+            import re as _re
+            for m in _re.finditer(r'CAR\s+\d+\s*\(([A-Z]{3})\)', msg_text.upper()):
+                abbr = m.group(1)
+                if abbr in abbr_set:
+                    drivers.append(abbr)
+        return drivers
+
     try:
         rcm = session.race_control_messages
         logger.info(f"Race control messages: {len(rcm) if rcm is not None else 'None'} entries")
         if rcm is not None and len(rcm) > 0:
             logger.info(f"RCM columns: {list(rcm.columns)}")
             for _, msg_row in rcm.iterrows():
-                racing_number = str(msg_row.get("RacingNumber", ""))
-                if not racing_number or racing_number == "nan" or racing_number == "":
-                    continue
-                abbr = number_to_abbr.get(racing_number)
-                if not abbr:
-                    # Try without leading zeros
-                    abbr = number_to_abbr.get(racing_number.lstrip("0"))
-                if not abbr:
-                    continue
                 msg_time = msg_row.get("Time")
                 if pd.isna(msg_time):
                     continue
-                # Time may be Timestamp or Timedelta  - handle both
+                # Time may be Timestamp or Timedelta - handle both
                 if hasattr(msg_time, 'total_seconds'):
                     time_sec = msg_time.total_seconds()
                 else:
-                    # Timestamp  - convert to offset from min_date
                     try:
                         time_sec = (msg_time - min_date).total_seconds()
                     except Exception:
                         continue
                 message = str(msg_row.get("Message", "")).upper()
                 category = str(msg_row.get("Category", "")).upper()
+                racing_number = str(msg_row.get("RacingNumber", ""))
 
-                logger.info(f"RCM: {abbr} | cat={category} | msg={message[:80]} | t={time_sec:.0f}s")
+                drivers_in_msg = _extract_drivers_from_msg(message, racing_number)
+                if not drivers_in_msg:
+                    continue
 
-                if "NO FURTHER ACTION" in message or "CLEARED" in message:
-                    flag_events.append((time_sec, abbr, "clear"))
+                # Determine flag type
+                if "NO FURTHER ACTION" in message or "NO FURTHER INVESTIGATION" in message or "CLEARED" in message:
+                    flag_type = "clear"
+                elif "PENALTY SERVED" in message:
+                    flag_type = "clear"
                 elif "PENALTY" in message or "PENALTY" in category:
-                    flag_events.append((time_sec, abbr, "penalty"))
+                    flag_type = "penalty"
                 elif "INVESTIGATION" in message or "INVESTIGATION" in category or "NOTED" in message:
-                    flag_events.append((time_sec, abbr, "investigation"))
+                    flag_type = "investigation"
+                else:
+                    continue
+
+                for abbr in drivers_in_msg:
+                    logger.info(f"RCM flag: {abbr} | {flag_type} | msg={message[:80]} | t={time_sec:.0f}s")
+                    flag_events.append((time_sec, abbr, flag_type))
         flag_events.sort(key=lambda e: e[0])
         logger.info(f"Parsed {len(flag_events)} flag events: {flag_events}")
     except Exception as e:
         logger.error(f"Failed to parse race control messages: {e}")
+
+    # Build full RC message list for the RC feed
+    rc_message_list: list[dict] = []
+    try:
+        if rcm is not None and len(rcm) > 0:
+            for _, msg_row in rcm.iterrows():
+                message = str(msg_row.get("Message", ""))
+                if not message or message == "nan":
+                    continue
+                category = str(msg_row.get("Category", ""))
+                racing_number = str(msg_row.get("RacingNumber", ""))
+                if racing_number in ("nan", "None", "0"):
+                    racing_number = ""
+                msg_time = msg_row.get("Time")
+                if pd.isna(msg_time):
+                    continue
+                if hasattr(msg_time, 'total_seconds'):
+                    time_sec = msg_time.total_seconds()
+                else:
+                    try:
+                        time_sec = (msg_time - min_date).total_seconds()
+                    except Exception:
+                        continue
+                entry: dict = {"message": message, "category": category, "timestamp": time_sec}
+                if racing_number and racing_number != "nan":
+                    entry["racing_number"] = racing_number
+                # Try to find lap number
+                lap_num = msg_row.get("Lap")
+                if not pd.isna(lap_num):
+                    try:
+                        entry["lap"] = int(lap_num)
+                    except (ValueError, TypeError):
+                        pass
+                rc_message_list.append(entry)
+            rc_message_list.sort(key=lambda e: e["timestamp"])
+    except Exception as e:
+        logger.error(f"Failed to build RC message list: {e}")
+
+    def _get_rc_messages(frame_time: float) -> list[dict]:
+        """Get RC messages up to frame_time (newest first, max 50)."""
+        msgs = [m for m in rc_message_list if m["timestamp"] <= frame_time]
+        return list(reversed(msgs[-50:]))
 
     def _get_driver_flag(abbr: str, frame_time: float) -> str | None:
         """Get current flag state for a driver at a given time."""
@@ -1405,6 +1470,9 @@ def _get_driver_positions_by_time_sync(
         quali_phase = _get_quali_phase(i * sample_interval)
         if quali_phase:
             frame["quali_phase"] = quali_phase
+        rc_msgs = _get_rc_messages(i * sample_interval)
+        if rc_msgs:
+            frame["rc_messages"] = rc_msgs
         frames.append(frame)
 
     return frames

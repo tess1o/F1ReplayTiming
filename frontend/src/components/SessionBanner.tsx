@@ -13,6 +13,7 @@ interface Props {
   settings?: ReplaySettings;
   onSettingChange?: (key: keyof ReplaySettings, value: boolean) => void;
   weather?: WeatherData;
+  extraActions?: React.ReactNode;
 }
 
 const SESSION_LABELS: Record<string, string> = {
@@ -61,6 +62,7 @@ export default function SessionBanner({
   settings: settingsProp,
   onSettingChange,
   weather,
+  extraActions,
 }: Props) {
   const settings = settingsProp || DEFAULT_SETTINGS;
   const isRace = sessionType === "R" || sessionType === "S";
@@ -159,6 +161,7 @@ export default function SessionBanner({
         )}
 
         <div className="flex items-center gap-1 sm:gap-3 flex-shrink-0">
+          {extraActions}
           <div className="bg-f1-red px-2 sm:px-4 py-1 rounded text-white font-extrabold text-[10px] sm:text-xs uppercase">
             {SESSION_LABELS[sessionType] || sessionType}
           </div>
@@ -437,7 +440,7 @@ export default function SessionBanner({
                 <p className="text-sm text-f1-muted leading-relaxed">
                   Shows the predicted position a driver would return to if they pitted
                   now, using precomputed pit loss times for each circuit. Predictions
-                  appear from lap 15 onwards and adjust for Safety Car and Virtual
+                  appear from lap 5 onwards and adjust for Safety Car and Virtual
                   Safety Car conditions.
                 </p>
                 <p className="text-sm text-f1-muted leading-relaxed mt-2">
@@ -448,6 +451,25 @@ export default function SessionBanner({
                   and <span className="text-red-400 font-bold">red</span> means less than 1s (very tight).
                   The pit gaps show the predicted gap to the car ahead (↑) and the
                   car behind (↓) after pitting.
+                </p>
+              </div>
+
+              {/* Race Control Messages */}
+              <div>
+                <h3 className="text-sm font-bold text-f1-red uppercase tracking-wider mb-2">
+                  Race control messages
+                </h3>
+                <p className="text-sm text-f1-muted leading-relaxed">
+                  Click the RC button on the track map to open a feed of all official
+                  race control messages — investigations, penalties, track limits,
+                  DRS activations, and flag changes.
+                </p>
+                <p className="text-sm text-f1-muted leading-relaxed mt-2">
+                  Drivers under investigation show a{" "}
+                  <svg className="w-3.5 h-3.5 text-orange-400 inline -mt-0.5" viewBox="0 0 24 24"><path d="M12 2L2 22h20L12 2zm0 6v7m0 2v2" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" /></svg>
+                  {" "}warning icon on the leaderboard. Drivers with a penalty show a{" "}
+                  <svg className="w-3.5 h-3.5 text-red-500 inline -mt-0.5" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2.5" /><path d="M12 8v5m0 3v.01" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" /></svg>
+                  {" "}penalty icon. These clear when the stewards resolve the incident.
                 </p>
               </div>
 
