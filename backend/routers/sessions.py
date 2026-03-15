@@ -57,6 +57,13 @@ def _build_events(year: int) -> dict:
             else:
                 session["available"] = False
 
+        # Normalize date_utc to ISO 8601 with "Z" so the browser
+        # correctly interprets them as UTC and converts to local time
+        for session in evt.get("sessions", []):
+            d = session.get("date_utc")
+            if d and not d.endswith("Z"):
+                session["date_utc"] = d.replace(" ", "T") + "Z"
+
         if has_past_session:
             evt["status"] = "available"
             last_past_idx = i
