@@ -194,19 +194,25 @@ export default function SessionPicker() {
       >
         {/* Compact header row */}
         <div
-          className="px-4 py-3 flex items-center gap-4"
+          className="px-3 sm:px-4 py-3 flex items-center gap-2 sm:gap-4 cursor-pointer"
           onClick={() => { if (isSelected) { setSelectedKey(null); } else { setSelectedKey(selectionKey); setSelectedEvent(evt); } }}
         >
           <span className="text-xs font-bold text-f1-muted w-8 flex-shrink-0">R{evt.round_number}</span>
-          <span className="text-white font-bold flex-1 min-w-0 truncate">
-            {COUNTRY_FLAGS[evt.country] && <span className="mr-1.5">{COUNTRY_FLAGS[evt.country]}</span>}
-            {evt.event_name}
-          </span>
+          <div className="flex-1 min-w-0">
+            <span className="text-white font-bold text-sm">
+              {COUNTRY_FLAGS[evt.country] && <span className="mr-1.5">{COUNTRY_FLAGS[evt.country]}</span>}
+              {evt.event_name}
+            </span>
+            <div className="sm:hidden flex items-center justify-between mt-0.5">
+              <span className="text-xs text-f1-muted">{evt.event_date}</span>
+              <StatusPill status={isLatest ? "latest" : displayEvt.status === "latest" ? "available" : displayEvt.status} />
+            </div>
+          </div>
           <span className="text-xs text-f1-muted hidden sm:block flex-shrink-0 w-44 text-right truncate">
             {evt.location}, {evt.country}
           </span>
-          <span className="text-xs text-f1-muted flex-shrink-0 w-20 text-right">{evt.event_date}</span>
-          <span className="flex-shrink-0 w-20 flex justify-end">
+          <span className="text-xs text-f1-muted hidden sm:block flex-shrink-0 w-20 text-right">{evt.event_date}</span>
+          <span className="hidden sm:flex flex-shrink-0 w-20 justify-end">
             <StatusPill status={isLatest ? "latest" : displayEvt.status === "latest" ? "available" : displayEvt.status} />
           </span>
           <svg
@@ -359,7 +365,7 @@ export default function SessionPicker() {
 
       <div className="max-w-7xl mx-auto px-6 py-8">
         {/* Season selector */}
-        <div className="flex gap-2 mb-8 flex-wrap">
+        <div className="flex gap-2 mb-8 flex-wrap max-w-3xl mx-auto">
           {seasons.map((s) => (
             <button
               key={s}
@@ -417,7 +423,7 @@ export default function SessionPicker() {
 
             {/* Latest round at top */}
             {latestEvent && (
-              <div className="mb-6">
+              <div className="mb-6 max-w-3xl mx-auto">
                 <h2 className="text-sm font-bold text-f1-muted uppercase tracking-wider mb-3">
                   Most Recent Round
                 </h2>
@@ -426,10 +432,10 @@ export default function SessionPicker() {
             )}
 
             {/* Season list */}
-            <h2 className="text-sm font-bold text-f1-muted uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-bold text-f1-muted uppercase tracking-wider mb-4 max-w-3xl mx-auto">
               {year} Season
             </h2>
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-2 max-w-3xl mx-auto">
               {displayEvents.map((evt) => (
                 <EventRow key={evt.round_number} evt={evt} />
               ))}
