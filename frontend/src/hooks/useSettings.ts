@@ -23,6 +23,7 @@ export interface ReplaySettings {
   showPitPrediction: boolean;
   showPitConfidence: boolean;
   showPitFreeAir: boolean;
+  showLastLapTime: boolean;
   showSectors: boolean;
   highlightClose: boolean;
   useImperial: boolean;
@@ -53,6 +54,7 @@ export const DEFAULTS: ReplaySettings = {
   showPitPrediction: true,
   showPitConfidence: true,
   showPitFreeAir: true,
+  showLastLapTime: true,
   showSectors: true,
   highlightClose: true,
   useImperial: false,

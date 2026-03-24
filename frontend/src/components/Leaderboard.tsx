@@ -5,6 +5,15 @@ import { ReplayDriver } from "@/hooks/useReplaySocket";
 import { ReplaySettings } from "@/hooks/useSettings";
 import { TYRE_COLORS, TYRE_SHORT, TEAM_ABBR } from "@/lib/constants";
 
+export interface LapEntry {
+  driver: string;
+  lap_number: number;
+  lap_time: string | null;
+  compound: string | null;
+  pit_in: boolean;
+  pit_out: boolean;
+}
+
 interface Props {
   drivers: ReplayDriver[];
   highlightedDrivers: string[];
@@ -15,6 +24,9 @@ interface Props {
   isQualifying?: boolean;
   compact?: boolean;
   onScaleChange?: (scale: number) => void;
+  lapData?: Map<string, Map<number, string>>;
+  currentLap?: number;
+  mobileTeamAbbrHidden?: boolean;
 }
 
 function formatGap(gap: string | null): string {
@@ -73,7 +85,7 @@ function computeIntervals(sorted: ReplayDriver[]): Map<string, string> {
   return intervals;
 }
 
-export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick, settings, currentTime, isRace, isQualifying, compact, onScaleChange }: Props) {
+export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick, settings, currentTime, isRace, isQualifying, compact, onScaleChange, lapData, currentLap, mobileTeamAbbrHidden }: Props) {
   const [showInterval, setShowInterval] = useState(true);
   const [scale, setScale] = useState(1);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -105,7 +117,7 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
     updateScale();
     window.addEventListener("resize", updateScale);
     return () => window.removeEventListener("resize", updateScale);
-  }, [drivers.length, settings.showGapToLeader, settings.showBestLapTime, isRace, compact, onScaleChange]);
+  }, [drivers.length, settings.showGapToLeader, settings.showBestLapTime, settings.showLastLapTime, isRace, compact, onScaleChange]);
 
   const sorted = [...drivers].sort(
     (a, b) => (a.position ?? 999) - (b.position ?? 999),
@@ -167,8 +179,8 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
               />
 
               {/* Team abbreviation - 28px */}
-              {settings.showTeamAbbr && (
-                <span className="w-7 text-[10px] font-bold text-f1-muted flex-shrink-0">
+              {settings.showTeamAbbr && !mobileTeamAbbrHidden && (
+                <span className="w-7 text-[10px] font-bold text-f1-muted flex-shrink-0" title="Team">
                   {TEAM_ABBR[drv.team] || drv.team?.slice(0, 3).toUpperCase()}
                 </span>
               )}
@@ -191,7 +203,7 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
 
               {/* Grid delta - 24px (race only) */}
               {isRace && settings.showGridChange && (
-              <span className="w-6 flex-shrink-0 text-center">
+              <span className="w-6 flex-shrink-0 text-center" title="Grid position change">
                 {!drv.retired && currentTime >= 10 && (
                   drv.pit_start ? (
                     <span className="text-[10px] font-bold text-white">Pit</span>
@@ -232,7 +244,7 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
 
               {/* Best lap time (practice/qualifying only) */}
               {!isRace && settings.showBestLapTime && (
-                <span className={`w-[60px] flex-shrink-0 text-xs font-bold text-right ${drv.position === 1 ? "text-purple-400" : "text-white"}`}>
+                <span className={`w-[60px] flex-shrink-0 text-xs font-bold text-right ${drv.position === 1 ? "text-purple-400" : "text-white"}`} title="Best lap time">
                   {drv.retired ? "Out" : (drv.best_lap_time || (drv.position === 1 ? formatGap(drv.gap) : null) || "")}
                 </span>
               )}
@@ -250,14 +262,14 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
                   </span>
                 ) : isRace ? (
                   drv.in_pit && !drv.retired ? (
-                    <span className="w-14 flex-shrink-0 text-left text-yellow-400">
+                    <span className="w-14 flex-shrink-0 text-left text-yellow-400" title="In pit lane">
                       <span className="text-xs font-bold">PIT</span>
                       {drv.pit_time != null && (
                         <span className="text-[9px] font-bold ml-0.5 tabular-nums">{drv.pit_time.toFixed(1)}s</span>
                       )}
                     </span>
                   ) : (
-                    <span className={`w-14 flex-shrink-0 text-xs font-bold text-left tabular-nums ${
+                    <span title={showInterval ? "Interval to car ahead" : "Gap to leader"} className={`w-14 flex-shrink-0 text-xs font-bold text-left tabular-nums ${
                       showInterval && settings.highlightClose && displayGap && (() => {
                           const val = parseFloat(displayGap.replace("+", ""));
                           return !isNaN(val) && val > 0 && val < 1;
@@ -269,11 +281,29 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
                     </span>
                   )
                 ) : (
-                  <span className={`w-14 flex-shrink-0 text-xs font-bold text-left tabular-nums text-f1-muted`}>
+                  <span className={`w-14 flex-shrink-0 text-xs font-bold text-left tabular-nums text-f1-muted sm:ml-0 ml-3`} title="Gap to leader">
                     {displayGap}
                   </span>
                 )
               )}
+
+              {/* Last lap time (race only) */}
+              {isRace && settings.showLastLapTime && (() => {
+                const driverLaps = lapData?.get(drv.abbr);
+                if (!driverLaps || !currentLap || currentLap < 2) return (
+                  <span className="w-[52px] sm:w-[60px] flex-shrink-0" />
+                );
+                let lastLapTime: string | null = null;
+                for (let l = currentLap; l >= 1; l--) {
+                  const t = driverLaps.get(l);
+                  if (t) { lastLapTime = t; break; }
+                }
+                return (
+                  <span className="w-[52px] sm:w-[60px] flex-shrink-0 text-[11px] sm:text-xs text-right tabular-nums text-f1-muted" title="Last lap time">
+                    {drv.retired ? "" : (lastLapTime || "")}
+                  </span>
+                );
+              })()}
 
               {/* Live sector indicators - fixed width (qualifying only) */}
               {isQualifying && settings.showSectors && (
@@ -297,7 +327,7 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
 
               {/* Pit stops / chequered flag - 20px (race only) */}
               {isRace && settings.showPitStops && (
-                <span className="w-5 flex-shrink-0 flex items-center justify-center ml-1">
+                <span className="w-5 flex-shrink-0 flex items-center justify-center ml-1" title={drv.finished ? "Finished" : "Pit stops"}>
                   {drv.finished ? (
                     <img src="/chequered-flag.png" alt="Finished" className="w-5 h-5 object-contain" />
                   ) : drv.pit_stops > 0 ? (
@@ -310,7 +340,7 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
 
               {/* Pit prediction - 36px (race only) */}
               {isRace && settings.showPitPrediction && (
-                <span className="w-9 flex-shrink-0 flex items-center justify-end gap-0.5 ml-1">
+                <span className="w-9 flex-shrink-0 flex items-center justify-end gap-0.5 ml-1" title="Predicted position after pit stop">
                   {drv.pit_prediction != null && (
                     <>
                       <span className={`flex items-center gap-0.5 text-[10px] font-bold ${
@@ -333,7 +363,7 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
 
               {/* Pit gaps (ahead / behind) stacked - race only, shown with pit prediction */}
               {isRace && settings.showPitPrediction && settings.showPitFreeAir && (
-                <span className="w-9 flex-shrink-0 flex flex-col items-end leading-tight">
+                <span className="w-9 flex-shrink-0 flex flex-col items-end leading-tight" title="Pit gaps: ↑ gap ahead, ↓ gap behind">
                   {drv.pit_prediction != null && (
                     <>
                       <span className="text-[8px] font-bold text-f1-muted">
@@ -359,7 +389,7 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
 
               {/* Tyre history - 36px (race only) */}
               {isRace && settings.showTyreHistory && (
-                <span className="w-9 flex-shrink-0 flex items-center justify-end gap-0.5">
+                <span className="w-9 flex-shrink-0 flex items-center justify-end gap-0.5" title="Tyre history">
                   {(drv.tyre_history || []).slice(-2).map((comp, i) => {
                     const hColor = TYRE_COLORS[comp] || "#888";
                     const hLabel = TYRE_SHORT[comp] || "?";
@@ -382,7 +412,7 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
 
               {/* Current tyre compound - 20px */}
               {settings.showTyreType && (
-                <span className="w-5 flex-shrink-0 flex items-center justify-center ml-1">
+                <span className="w-5 flex-shrink-0 flex items-center justify-center ml-1" title="Current tyre">
                   <span
                     className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-extrabold leading-none border-2"
                     style={{
@@ -398,7 +428,7 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
 
               {/* Tyre age - 20px */}
               {settings.showTyreAge && (
-                <span className="w-5 flex-shrink-0 text-xs font-extrabold text-white text-right">
+                <span className="w-5 flex-shrink-0 text-xs font-extrabold text-white text-right" title="Tyre age (laps)">
                   {drv.tyre_life ?? ""}
                 </span>
               )}

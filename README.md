@@ -14,17 +14,19 @@ A web app for watching Formula 1 sessions with real timing data, car positions o
 ## Features
 
 - **Live timing** (Beta) - connect to live F1 sessions during race weekends with real-time data from the F1 SignalR stream, including a broadcast delay slider and automatic detection of post-session replays
-- **Track map** with real-time car positions from GPS telemetry, updating every 0.5 seconds with smooth interpolation
-- **Driver leaderboard** showing position, gap to leader, interval, tyre compound and age, tyre history, pit stop count, grid position changes, fastest lap indicator, and investigation/penalty status
-- **Race control messages** - steward decisions, investigations, penalties, track limits, and flag changes displayed in a resizable overlay on the track map
-- **Pit position prediction** (Beta) estimates where a driver would rejoin if they pitted now, with predicted gap ahead and behind, using precomputed pit loss times per circuit with Safety Car and Virtual Safety Car adjustments
-- **Telemetry** for any driver showing speed, throttle, brake, gear, and DRS (2025 and earlier) plotted against track distance
+- **Track map** with real-time car positions from GPS telemetry, updating every 0.5 seconds with smooth interpolation, marshal sector flags, and toggleable corner numbers
+- **Driver leaderboard** showing position, gap to leader, interval, tyre compound and age, tyre history, pit stop count and live pit timer, grid position changes, fastest lap indicator, investigation/penalty status, and sub-1-second interval highlighting
+- **Race control messages** - steward decisions, investigations, penalties, track limits, and flag changes displayed in a draggable overlay on the track map with optional sound notifications
+- **Pit position prediction** estimates where a driver would rejoin if they pitted now, with predicted gap ahead and behind, using precomputed pit loss times per circuit with Safety Car and Virtual Safety Car adjustments
+- **Telemetry** for unlimited drivers showing speed, throttle, brake, gear, and DRS (2025 and earlier) plotted against track distance, with a moveable side panel for 3+ driver comparisons
 - **Picture-in-Picture** mode for a compact floating window with track map, race control, leaderboard, and telemetry
 - **Broadcast sync** - match the replay to a recording of a session, either by uploading a screenshot of the timing tower (using AI vision) or by manually entering gap times
 - **Weather data** including air and track temperature, humidity, wind, and rainfall status
 - **Track status flags** for green, yellow, Safety Car, Virtual Safety Car, and red flag conditions
-- **Playback controls** with 0.5x to 20x speed, skip buttons (5s, 30s, 1m, 5m), lap jumping, and a progress bar
+- **Playback controls** with 0.5x to 20x speed, skip buttons (5s, 30s, 1m, 5m), lap jumping, a progress bar, and red flag countdown with skip-to-restart
 - **Session support** for races, qualifying, sprint qualifying, and practice sessions from 2024 onwards
+- **Full screen mode** hides the session banner and enters browser fullscreen for a distraction-free view
+- **Imperial units** toggle for °F and mph in settings
 - **Passphrase authentication** to optionally restrict access when publicly hosted
 
 ## Architecture

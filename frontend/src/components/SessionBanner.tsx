@@ -14,6 +14,7 @@ interface Props {
   onSettingChange?: (key: keyof ReplaySettings, value: boolean) => void;
   weather?: WeatherData;
   extraActions?: React.ReactNode;
+  mobileTeamAbbrHidden?: boolean;
 }
 
 const SESSION_LABELS: Record<string, string> = {
@@ -30,6 +31,7 @@ const LEADERBOARD_SETTINGS: { key: keyof ReplaySettings; label: string; raceOnly
   { key: "showTeamAbbr", label: "Team" },
   { key: "showGridChange", label: "Grid position change", raceOnly: true },
   { key: "showBestLapTime", label: "Best time", nonRaceOnly: true },
+  { key: "showLastLapTime", label: "Last lap time", raceOnly: true },
   { key: "showGapToLeader", label: "Gap" },
   { key: "highlightClose", label: "Highlight under 1s", raceOnly: true },
   { key: "showPitStops", label: "Pit stops", raceOnly: true },
@@ -70,6 +72,7 @@ export default function SessionBanner({
   onSettingChange,
   weather,
   extraActions,
+  mobileTeamAbbrHidden,
 }: Props) {
   const settings = settingsProp || DEFAULT_SETTINGS;
   const isRace = sessionType === "R" || sessionType === "S";
@@ -173,10 +176,12 @@ export default function SessionBanner({
             {SESSION_LABELS[sessionType] || sessionType}
           </div>
 
-          {/* Features/info link - hidden on mobile */}
+          {/* Features/info link */}
           <a
             href="/features"
-            className="hidden sm:flex w-9 h-9 items-center justify-center rounded hover:bg-white/10 transition-colors text-f1-muted hover:text-white"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex w-8 h-8 sm:w-9 sm:h-9 items-center justify-center rounded hover:bg-white/10 transition-colors text-f1-muted hover:text-white"
             title="How it works"
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -257,6 +262,9 @@ export default function SessionBanner({
                           <span className={`${parent ? "text-xs text-f1-muted" : "text-sm text-white"} flex items-center gap-2`}>
                             {label}
                             {badge && <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-f1-red/20 text-f1-red leading-none">{badge}</span>}
+                            {key === "showTeamAbbr" && mobileTeamAbbrHidden && (
+                              <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-yellow-500/20 text-yellow-500 leading-none">Auto-hidden on mobile</span>
+                            )}
                           </span>
                           <div className={`relative ${parent ? "w-7 h-4" : "w-9 h-5"} rounded-full transition-colors ${settings[key] ? "bg-f1-red" : "bg-f1-border"}`}>
                             <div className={`absolute top-0.5 ${parent ? "w-3 h-3" : "w-4 h-4"} bg-white rounded-full transition-transform ${settings[key] ? (parent ? "translate-x-[14px]" : "translate-x-[18px]") : "translate-x-0.5"}`} />

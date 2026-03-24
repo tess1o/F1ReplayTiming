@@ -1,17 +1,18 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { useApi } from "@/hooks/useApi";
 import { useReplaySocket } from "@/hooks/useReplaySocket";
 import { useSettings } from "@/hooks/useSettings";
 import SessionBanner from "@/components/SessionBanner";
 import TrackCanvas from "@/components/TrackCanvas";
-import Leaderboard from "@/components/Leaderboard";
+import Leaderboard, { type LapEntry } from "@/components/Leaderboard";
 import PlaybackControls from "@/components/PlaybackControls";
 import TelemetryChart from "@/components/TelemetryChart";
 import SyncPhoto from "@/components/SyncPhoto";
 import PiPWindow from "@/components/PiPWindow";
+import LapAnalysisPanel from "@/components/LapAnalysisPanel";
 import type { SectorOverlay } from "@/lib/trackRenderer";
 import { Maximize, Minimize, ArrowUpRight } from "lucide-react";
 
@@ -58,6 +59,10 @@ export default function ReplayPage() {
   const [mobileLeaderboardOpen, setMobileLeaderboardOpen] = useState(true);
   const [mobileTelemetryOpen, setMobileTelemetryOpen] = useState(false);
   const [mobileRcOpen, setMobileRcOpen] = useState(true);
+  const [lapAnalysisOpen, setLapAnalysisOpen] = useState(false);
+  const [mobileLapAnalysisOpen, setMobileLapAnalysisOpen] = useState(false);
+  // Force telemetry to bottom when lap analysis panel is open to avoid squashing the track map
+  const effectiveTelemetryPosition = lapAnalysisOpen && telemetryPosition === "left" ? "bottom" : telemetryPosition;
   const [leaderboardScale, setLeaderboardScale] = useState(1);
   const [pipTrackOpen, setPipTrackOpen] = useState(true);
   const [pipTelemetryOpen, setPipTelemetryOpen] = useState(false);
@@ -139,6 +144,29 @@ export default function ReplayPage() {
     `/api/sessions/${year}/${round}/track?type=${sessionType}`,
   );
 
+  // Fetch lap data for last lap time column (race/sprint only)
+  const { data: lapsResponse } = useApi<{ laps: LapEntry[] }>(
+    sessionType === "R" || sessionType === "S"
+      ? `/api/sessions/${year}/${round}/laps?type=${sessionType}`
+      : null,
+  );
+
+  // Build lookup: driver -> lap_number -> lap_time
+  const lapData = useMemo(() => {
+    if (!lapsResponse?.laps) return undefined;
+    const map = new Map<string, Map<number, string>>();
+    for (const lap of lapsResponse.laps) {
+      if (!lap.lap_time) continue;
+      let driverMap = map.get(lap.driver);
+      if (!driverMap) {
+        driverMap = new Map();
+        map.set(lap.driver, driverMap);
+      }
+      driverMap.set(lap.lap_number, lap.lap_time);
+    }
+    return map;
+  }, [lapsResponse]);
+
   const replay = useReplaySocket(year, round, sessionType);
 
   // RC sound notification
@@ -168,7 +196,7 @@ export default function ReplayPage() {
       setTelemetryHeight(telemetryPanelRef.current.offsetHeight);
       setTelemetryWidth(telemetryPanelRef.current.offsetWidth);
     }
-  }, [selectedDrivers.length, showTelemetry, telemetryPosition]);
+  }, [selectedDrivers.length, showTelemetry, effectiveTelemetryPosition]);
 
   const isLoading = sessionLoading || trackLoading;
   const dataError = sessionError || trackError;
@@ -241,12 +269,13 @@ export default function ReplayPage() {
   })();
 
   // Calculate leaderboard width based on active columns
-  const leaderboardWidth = (() => {
+  const leaderboardWidthFull = (() => {
     let w = 106; // base: position(24) + team bar(12) + driver(30) + flags(16) + padding(16) + right padding(8)
     if (settings.showTeamAbbr) w += 28;
     if (!isRace) w += 18; // pit indicator (P box + margin)
     if (isRace && settings.showGridChange) w += 24;
     if (!isRace && settings.showBestLapTime) w += 60; // best lap time column
+    if (isRace && settings.showLastLapTime) w += 60; // last lap time column
     if (settings.showGapToLeader) w += 56;
     if (isQualifying && settings.showSectors) w += 36; // sector indicators (28 + 8 margin)
     if (isRace && settings.showPitStops) w += 24;
@@ -257,6 +286,10 @@ export default function ReplayPage() {
     if (isRace && settings.showPitPrediction && settings.showPitFreeAir) w += 36; // pit gaps (ahead/behind)
     return w;
   })();
+
+  // On mobile, auto-hide team abbreviation if columns overflow the screen
+  const mobileTeamAbbrHidden = isMobile && settings.showTeamAbbr && leaderboardWidthFull > (typeof window !== "undefined" ? window.innerWidth : 400);
+  const leaderboardWidth = mobileTeamAbbrHidden ? leaderboardWidthFull - 28 : leaderboardWidthFull;
 
   return (
     <div className="h-dvh flex flex-col bg-f1-dark overflow-hidden" style={{ paddingTop: "env(safe-area-inset-top)" }}>
@@ -271,13 +304,48 @@ export default function ReplayPage() {
           settings={settings}
           onSettingChange={updateSetting}
           weather={weather}
+          mobileTeamAbbrHidden={mobileTeamAbbrHidden}
         />
       )}
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col sm:flex-row min-h-0 overflow-y-auto sm:overflow-hidden pb-16 sm:pb-0">
+      <div className="flex-1 flex flex-col sm:flex-row min-h-0 overflow-y-auto sm:overflow-hidden pb-20 sm:pb-0">
+        {/* Race Control section - mobile only, above track map */}
+        <div className="sm:hidden">
+          <button
+            onClick={() => setMobileRcOpen(!mobileRcOpen)}
+            className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border"
+          >
+            <span className="text-[11px] font-bold text-f1-muted uppercase tracking-wider">Race Control</span>
+            <svg className={`w-4 h-4 text-f1-muted transition-transform ${mobileRcOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {mobileRcOpen && (() => {
+            const latest = (replay.frame?.rc_messages || [])[0];
+            if (!latest) return <p className="text-f1-muted text-xs px-3 py-2">No messages yet</p>;
+            const upper = latest.message.toUpperCase();
+            const isPenalty = upper.includes("PENALTY") && !upper.includes("NO FURTHER");
+            const isInvestigation = upper.includes("INVESTIGATION") || upper.includes("NOTED");
+            const isCleared = upper.includes("NO FURTHER") || upper.includes("NO INVESTIGATION");
+            return (
+              <div className="px-3 py-2 bg-f1-card border-b border-f1-border">
+                <div className="flex items-start gap-2">
+                  <div className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${
+                    isPenalty ? "bg-red-500" : isInvestigation ? "bg-orange-400" : isCleared ? "bg-green-500" : "bg-f1-muted"
+                  }`} />
+                  <div className="min-w-0">
+                    <p className="text-[11px] text-white leading-tight">{latest.message}</p>
+                    {latest.lap && <span className="text-[9px] text-f1-muted">Lap {latest.lap}</span>}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+
         {/* Track section */}
-        <div className={`sm:flex-1 ${!isMobile && showTelemetry && selectedDrivers.length > 2 ? `flex ${telemetryPosition === "left" ? "flex-row" : "flex-col"} min-h-0` : "relative"}`}>
+        <div className={`sm:flex-1 ${!isMobile && showTelemetry && selectedDrivers.length > 2 ? `flex ${effectiveTelemetryPosition === "left" ? "flex-row" : "flex-col"} min-h-0` : "relative"}`}>
           {/* Mobile section header */}
           {isMobile && (
             <button
@@ -497,6 +565,47 @@ export default function ReplayPage() {
                 </div>
               )}
 
+              {/* Sector overlay controls - mobile qualifying only */}
+              {isMobile && isQualifying && trackData?.sector_boundaries && (
+                <div className="absolute bottom-2 left-2 right-2 z-20 flex items-center gap-1">
+                  {showSectorOverlay && selectedDrivers.length > 0 && (
+                    <div className="flex items-center gap-1 overflow-x-auto">
+                      {selectedDrivers.map((abbr) => {
+                        const drv = drivers.find((d) => d.abbr === abbr);
+                        const isActive = sectorFocusDriver === abbr;
+                        return (
+                          <button
+                            key={abbr}
+                            onClick={() => setSectorFocusDriver(isActive ? null : abbr)}
+                            className={`flex-shrink-0 px-1.5 py-1 border rounded text-[10px] font-bold transition-colors ${
+                              isActive
+                                ? "bg-purple-500/20 border-purple-500/50 text-purple-300"
+                                : "bg-f1-card/90 border-f1-border text-f1-muted backdrop-blur-sm"
+                            }`}
+                          >
+                            <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{ backgroundColor: drv?.color }} />
+                            {abbr}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {showSectorOverlay && selectedDrivers.length === 0 && (
+                    <span className="text-[10px] text-f1-muted">Select a driver to view sectors</span>
+                  )}
+                  <button
+                    onClick={() => setShowSectorOverlay(!showSectorOverlay)}
+                    className={`flex-shrink-0 ml-auto px-2 py-1 border rounded text-[10px] font-bold transition-colors ${
+                      showSectorOverlay
+                        ? "bg-purple-500/20 border-purple-500/50 text-purple-300"
+                        : "bg-f1-card/90 border-f1-border text-f1-muted backdrop-blur-sm"
+                    }`}
+                  >
+                    Sectors
+                  </button>
+                </div>
+              )}
+
               {/* Fullscreen toggle moved to PlaybackControls */}
 
               {/* Telemetry overlay - desktop only, bottom-left (1-2 drivers) */}
@@ -528,6 +637,23 @@ export default function ReplayPage() {
                   Show Telemetry
                 </button>
               )}
+
+              {/* Lap Analysis floating button - desktop only, bottom-right */}
+              {!isMobile && isRace && lapsResponse?.laps && (
+                <button
+                  onClick={() => setLapAnalysisOpen(!lapAnalysisOpen)}
+                  className={`absolute bottom-2 right-3 z-20 flex items-center gap-1 px-2 py-1 rounded text-xs font-bold transition-colors ${
+                    lapAnalysisOpen
+                      ? "bg-f1-red text-white"
+                      : "bg-f1-card/90 border border-f1-border text-f1-muted hover:text-white backdrop-blur-sm"
+                  }`}
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                  </svg>
+                  Laps
+                </button>
+              )}
             </div>
           )}
 
@@ -535,22 +661,26 @@ export default function ReplayPage() {
           {!isMobile && showTelemetry && selectedDrivers.length > 2 && (
             <div
               className={`flex-shrink-0 ${
-                telemetryPosition === "left"
+                effectiveTelemetryPosition === "left"
                   ? "h-full bg-f1-card border-r border-f1-border order-first px-3 py-2 overflow-y-auto overflow-x-hidden"
                   : "border-t border-f1-border py-1 flex overflow-hidden"
               }`}
-              style={telemetryPosition === "left" && rcPinned && telemetryWidth > 0 ? { width: telemetryWidth + 24 } : undefined}
+              style={effectiveTelemetryPosition === "left" && rcPinned && telemetryWidth > 0 ? { width: telemetryWidth + 24 } : undefined}
             >
-              <div ref={telemetryPanelRef} className={telemetryPosition === "bottom" ? "inline-block bg-f1-card px-3 pt-1 flex-shrink-0" : ""}>
+              <div ref={telemetryPanelRef} className={effectiveTelemetryPosition === "bottom" ? "inline-block bg-f1-card px-3 pt-1 flex-shrink-0" : ""}>
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-[10px] font-bold text-f1-muted uppercase">Telemetry</span>
-                  <button
-                    onClick={() => setTelemetryPosition(telemetryPosition === "left" ? "bottom" : "left")}
-                    className="px-1.5 py-0.5 text-[9px] font-bold text-f1-muted hover:text-white border border-f1-border rounded transition-colors"
-                    title={telemetryPosition === "left" ? "Move to bottom" : "Move to left"}
-                  >
-                    {telemetryPosition === "left" ? "Move to bottom" : "Move to left"}
-                  </button>
+                  {lapAnalysisOpen ? (
+                    <span className="text-[9px] text-f1-muted italic">Shown at bottom while Lap Analysis is open</span>
+                  ) : (
+                    <button
+                      onClick={() => setTelemetryPosition(telemetryPosition === "left" ? "bottom" : "left")}
+                      className="px-1.5 py-0.5 text-[9px] font-bold text-f1-muted hover:text-white border border-f1-border rounded transition-colors"
+                      title={telemetryPosition === "left" ? "Move to bottom" : "Move to left"}
+                    >
+                      {telemetryPosition === "left" ? "Move to bottom" : "Move to left"}
+                    </button>
+                  )}
                   <button
                     onClick={() => setShowTelemetry(false)}
                     className="px-1.5 py-0.5 text-[9px] font-bold text-f1-muted hover:text-white border border-f1-border rounded transition-colors ml-auto"
@@ -569,7 +699,7 @@ export default function ReplayPage() {
               {/* Race Control in panel: show button or pinned messages */}
               {!rcPinned && (
                 <div className={`flex items-center justify-center ${
-                  telemetryPosition === "bottom"
+                  effectiveTelemetryPosition === "bottom"
                     ? "border-l border-f1-border px-4"
                     : "border-t border-f1-border py-2 mt-2"
                 }`}>
@@ -584,11 +714,11 @@ export default function ReplayPage() {
               {rcPinned && (
                 <div
                   className={`bg-f1-card ${
-                    telemetryPosition === "bottom"
+                    effectiveTelemetryPosition === "bottom"
                       ? "border-l border-f1-border px-3 pt-1 flex-1 overflow-hidden flex flex-col"
                     : "border-t border-f1-border px-3 py-2 mt-2"
                   }`}
-                  style={telemetryPosition === "bottom" && telemetryHeight > 0 ? { maxHeight: telemetryHeight } : undefined}
+                  style={effectiveTelemetryPosition === "bottom" && telemetryHeight > 0 ? { maxHeight: telemetryHeight } : undefined}
                 >
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[10px] font-bold text-f1-muted uppercase">Race Control</span>
@@ -630,40 +760,6 @@ export default function ReplayPage() {
           )}
         </div>
 
-        {/* Race Control section - mobile only */}
-        <div className="sm:hidden">
-          <button
-            onClick={() => setMobileRcOpen(!mobileRcOpen)}
-            className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border"
-          >
-            <span className="text-[11px] font-bold text-f1-muted uppercase tracking-wider">Race Control</span>
-            <svg className={`w-4 h-4 text-f1-muted transition-transform ${mobileRcOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-          {mobileRcOpen && (() => {
-            const latest = (replay.frame?.rc_messages || [])[0];
-            if (!latest) return <p className="text-f1-muted text-xs px-3 py-2">No messages yet</p>;
-            const upper = latest.message.toUpperCase();
-            const isPenalty = upper.includes("PENALTY") && !upper.includes("NO FURTHER");
-            const isInvestigation = upper.includes("INVESTIGATION") || upper.includes("NOTED");
-            const isCleared = upper.includes("NO FURTHER") || upper.includes("NO INVESTIGATION");
-            return (
-              <div className="px-3 py-2 bg-f1-card border-b border-f1-border">
-                <div className="flex items-start gap-2">
-                  <div className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${
-                    isPenalty ? "bg-red-500" : isInvestigation ? "bg-orange-400" : isCleared ? "bg-green-500" : "bg-f1-muted"
-                  }`} />
-                  <div className="min-w-0">
-                    <p className="text-[11px] text-white leading-tight">{latest.message}</p>
-                    {latest.lap && <span className="text-[9px] text-f1-muted">Lap {latest.lap}</span>}
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
-        </div>
-
         {/* Telemetry section - mobile only, collapsible like leaderboard */}
         <div className="sm:hidden">
           <button
@@ -689,33 +785,69 @@ export default function ReplayPage() {
           )}
         </div>
 
-        {/* Leaderboard section */}
+        {/* Leaderboard section (with optional lap analysis panel on desktop) */}
         {settings.showLeaderboard && (
-          <div className={`flex-shrink-0 ${isMobile ? "" : "border-l"} border-f1-border`} style={{ width: isMobile ? "100%" : Math.ceil(leaderboardWidth * leaderboardScale) }}>
-            {/* Mobile section header */}
-            {isMobile && (
-              <button
-                onClick={() => setMobileLeaderboardOpen(!mobileLeaderboardOpen)}
-                className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border"
-              >
-                <span className="text-[11px] font-bold text-f1-muted uppercase tracking-wider">Leaderboard</span>
-                <svg className={`w-4 h-4 text-f1-muted transition-transform ${mobileLeaderboardOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
+          <div className={`flex-shrink-0 flex ${isMobile ? "" : "border-l"} border-f1-border`} style={{ width: isMobile ? "100%" : undefined }}>
+            {/* Lap Analysis Panel - desktop only, left of leaderboard */}
+            {!isMobile && isRace && lapAnalysisOpen && lapsResponse?.laps && (
+              <div className="w-[300px] h-full border-r border-f1-border overflow-hidden flex-shrink-0">
+                <LapAnalysisPanel laps={lapsResponse.laps} drivers={drivers} currentLap={replay.frame?.lap || 0} onClose={() => setLapAnalysisOpen(false)} />
+              </div>
             )}
 
-            {(!isMobile || mobileLeaderboardOpen) && (
-              <Leaderboard
-                drivers={drivers}
-                highlightedDrivers={selectedDrivers}
-                onDriverClick={handleDriverClick}
-                settings={settings}
-                currentTime={replay.frame?.timestamp || 0}
-                isRace={isRace}
-                isQualifying={isQualifying}
-                onScaleChange={setLeaderboardScale}
-              />
+            <div style={{ width: isMobile ? "100%" : Math.ceil(leaderboardWidth * leaderboardScale) }}>
+              {/* Mobile section header */}
+              {isMobile && (
+                <button
+                  onClick={() => setMobileLeaderboardOpen(!mobileLeaderboardOpen)}
+                  className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border"
+                >
+                  <span className="text-[11px] font-bold text-f1-muted uppercase tracking-wider">Leaderboard</span>
+                  <svg className={`w-4 h-4 text-f1-muted transition-transform ${mobileLeaderboardOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+              )}
+
+              {(!isMobile || mobileLeaderboardOpen) && (
+                <Leaderboard
+                  drivers={drivers}
+                  highlightedDrivers={selectedDrivers}
+                  onDriverClick={handleDriverClick}
+                  settings={settings}
+                  currentTime={replay.frame?.timestamp || 0}
+                  isRace={isRace}
+                  isQualifying={isQualifying}
+                  onScaleChange={setLeaderboardScale}
+                  lapData={lapData}
+                  currentLap={replay.frame?.lap || 0}
+                  mobileTeamAbbrHidden={mobileTeamAbbrHidden}
+                />
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Lap Analysis section - mobile only, below leaderboard */}
+        {isMobile && isRace && lapsResponse?.laps && (
+          <div className="sm:hidden border-t border-f1-border" ref={(el) => {
+            if (el && mobileLapAnalysisOpen) {
+              setTimeout(() => el.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+            }
+          }}>
+            <button
+              onClick={() => setMobileLapAnalysisOpen(!mobileLapAnalysisOpen)}
+              className="w-full flex items-center justify-between px-3 py-3 bg-f1-card border-b border-f1-border min-h-[44px]"
+            >
+              <span className="text-[11px] font-bold text-f1-muted uppercase tracking-wider">Lap Analysis</span>
+              <svg className={`w-4 h-4 text-f1-muted transition-transform ${mobileLapAnalysisOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {mobileLapAnalysisOpen && (
+              <div className="bg-f1-card">
+                <LapAnalysisPanel laps={lapsResponse.laps} drivers={drivers} currentLap={replay.frame?.lap || 0} />
+              </div>
             )}
           </div>
         )}
@@ -899,7 +1031,9 @@ export default function ReplayPage() {
                     isRace={isRace}
                     isQualifying={isQualifying}
                     compact
-                  />
+                    lapData={lapData}
+                    currentLap={replay.frame?.lap || 0}
+                      />
                 </div>
               )}
             </div>

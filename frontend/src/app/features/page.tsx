@@ -1,13 +1,24 @@
+"use client";
+
 export default function FeaturesPage() {
   return (
     <div className="min-h-screen bg-f1-dark">
       <div className="bg-f1-card border-b border-f1-border">
         <div className="max-w-3xl mx-auto px-6 py-8 flex items-center gap-4">
-          <a href="/" className="text-f1-muted hover:text-white transition-colors">
+          <button
+            onClick={() => {
+              if (window.opener || window.history.length <= 1) {
+                window.close();
+              } else {
+                window.location.href = "/";
+              }
+            }}
+            className="text-f1-muted hover:text-white transition-colors"
+          >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
-          </a>
+          </button>
           <h1 className="text-2xl font-bold text-white">Features</h1>
         </div>
       </div>
@@ -37,66 +48,73 @@ export default function FeaturesPage() {
           </p>
           <div className="space-y-4">
             {/* Position */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
               <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Position</span>
               <span className="flex items-center gap-2 flex-shrink-0">
                 <span className="w-6 h-6 flex items-center justify-center rounded bg-f1-red text-white text-sm font-extrabold">1</span>
                 <span className="w-6 text-sm font-extrabold text-white text-right">2</span>
               </span>
-              <span className="text-sm text-f1-text">Current race or session position. The leader is highlighted with a red badge.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Current race or session position. The leader is highlighted with a red badge.</span>
             </div>
 
             {/* Team colour */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
               <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Team colour</span>
               <span className="flex items-center gap-1.5 flex-shrink-0">
                 <span className="w-1 h-6 rounded-sm" style={{ backgroundColor: "#FF8000" }} />
                 <span className="w-1 h-6 rounded-sm" style={{ backgroundColor: "#E80020" }} />
               </span>
-              <span className="text-sm text-f1-text">A colour bar next to each driver matching their constructor.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">A colour bar next to each driver matching their constructor.</span>
             </div>
 
             {/* Team abbr */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
               <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Team abbr.</span>
               <span className="flex items-center gap-1.5 flex-shrink-0">
                 <span className="text-[10px] font-bold text-f1-muted">MCL</span>
                 <span className="text-[10px] font-bold text-f1-muted">FER</span>
               </span>
-              <span className="text-sm text-f1-text">Three-letter constructor abbreviation. Off by default.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Three-letter constructor abbreviation. Off by default.</span>
             </div>
 
             {/* Gap */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
               <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Gap</span>
               <span className="flex items-center gap-2 flex-shrink-0">
                 <span className="text-xs font-bold text-f1-muted">+3.200</span>
                 <span className="text-xs font-bold text-yellow-400">PIT</span>
               </span>
-              <span className="text-sm text-f1-text">Gap to the leader (races) or best lap time (practice/qualifying). Shows &quot;PIT&quot; when in the pit lane.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Gap to the leader (races) or best lap time (practice/qualifying). Shows &quot;PIT&quot; when in the pit lane.</span>
+            </div>
+
+            {/* Last lap time */}
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
+              <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Last lap</span>
+              <span className="text-xs tabular-nums text-f1-muted flex-shrink-0">1:32.456</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">The driver&apos;s most recently completed lap time. Race replay only.</span>
             </div>
 
             {/* Grid delta */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
               <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Grid delta</span>
               <span className="flex items-center gap-2 flex-shrink-0">
                 <span className="text-[10px] font-bold text-green-400">&#9650;3</span>
                 <span className="text-[10px] font-bold text-red-400">&#9660;2</span>
               </span>
-              <span className="text-sm text-f1-text">Positions gained or lost compared to the starting grid. Race only.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Positions gained or lost compared to the starting grid. Race only.</span>
             </div>
 
             {/* Pit stops */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
               <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Pit stops</span>
               <span className="w-5 h-5 border border-f1-muted rounded-sm flex items-center justify-center text-[10px] font-extrabold text-white flex-shrink-0">
                 2
               </span>
-              <span className="text-sm text-f1-text">Number of pit stops completed so far. Race only.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Number of pit stops completed so far. Race only.</span>
             </div>
 
             {/* Pit prediction */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
               <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Pit prediction</span>
               <span className="flex items-center gap-0.5 flex-shrink-0">
                 <img src="/pit-return.png" alt="" className="w-3 h-3 opacity-50 invert" />
@@ -106,39 +124,39 @@ export default function FeaturesPage() {
                 <span className="text-[8px] font-bold text-f1-muted">↑3.2s</span>
                 <span className="text-[8px] font-bold text-f1-muted">↓8.4s</span>
               </span>
-              <span className="text-sm text-f1-text">Predicted return position with gap ahead (top) and gap behind (bottom). Race only.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Predicted return position with gap ahead (top) and gap behind (bottom). Race only.</span>
             </div>
 
             {/* Tyre compound */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
               <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Tyre compound</span>
               <span className="flex items-center gap-1.5 flex-shrink-0">
                 <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-extrabold leading-none border-2" style={{ borderColor: "#E80020", color: "#E80020" }}>S</span>
                 <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-extrabold leading-none border-2" style={{ borderColor: "#FFC800", color: "#FFC800" }}>M</span>
                 <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-extrabold leading-none border-2" style={{ borderColor: "#FFFFFF", color: "#FFFFFF" }}>H</span>
               </span>
-              <span className="text-sm text-f1-text">The current tyre compound shown as a colour-coded circle.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">The current tyre compound shown as a colour-coded circle.</span>
             </div>
 
             {/* Tyre age */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
               <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Tyre age</span>
               <span className="text-xs font-extrabold text-white flex-shrink-0">12</span>
-              <span className="text-sm text-f1-text">Number of laps on the current set of tyres.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Number of laps on the current set of tyres.</span>
             </div>
 
             {/* Tyre history */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
               <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Tyre history</span>
               <span className="flex items-center gap-0.5 flex-shrink-0">
                 <span className="w-3.5 h-3.5 rounded-full flex items-center justify-center text-[7px] font-extrabold leading-none border opacity-50" style={{ borderColor: "#E80020", color: "#E80020" }}>S</span>
                 <span className="w-3.5 h-3.5 rounded-full flex items-center justify-center text-[7px] font-extrabold leading-none border opacity-50" style={{ borderColor: "#FFC800", color: "#FFC800" }}>M</span>
               </span>
-              <span className="text-sm text-f1-text">The last two tyre compounds used, shown as smaller icons. Race only.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">The last two tyre compounds used, shown as smaller icons. Race only.</span>
             </div>
 
             {/* Flags */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
               <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Fastest lap</span>
               <span className="flex items-center gap-1.5 flex-shrink-0">
                 <svg className="w-3.5 h-3.5 text-purple-500" viewBox="0 0 24 24" fill="currentColor">
@@ -146,7 +164,45 @@ export default function FeaturesPage() {
                   <path d="M12 6v7l4.5 2.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
                 </svg>
               </span>
-              <span className="text-sm text-f1-text">Purple clock icon shown next to the driver with the fastest lap.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Purple clock icon shown next to the driver with the fastest lap.</span>
+            </div>
+          </div>
+        </section>
+
+        {/* Lap Analysis */}
+        <section className="bg-f1-card border border-f1-border rounded-xl p-6">
+          <div className="flex items-center gap-2 mb-1">
+            <h2 className="text-lg font-bold text-white">Lap Analysis</h2>
+            <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-f1-red/20 text-f1-red leading-none">Beta</span>
+          </div>
+          <p className="text-xs font-bold text-f1-red uppercase tracking-wider mb-3">Race replay only</p>
+          <p className="text-f1-text leading-relaxed mb-3">
+            A dedicated panel for analysing driver pace across the race. On desktop, open it via the
+            &quot;Laps&quot; button on the track map &mdash; the panel slides out to the left. On mobile,
+            it appears as a collapsible section.
+          </p>
+          <p className="text-f1-text leading-relaxed mb-3">
+            Select up to two drivers using the dropdown menus at the top of the panel to compare their
+            lap times side by side.
+          </p>
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
+              <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Lap chart</span>
+              <span className="flex items-center gap-1 flex-shrink-0">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+              </span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Line chart of lap times over the race. Each driver is coloured by their team. Pit laps are excluded from the line and marked with dots.</span>
+            </div>
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
+              <span className="w-24 flex-shrink-0 text-sm font-bold text-f1-muted">Lap list</span>
+              <span className="flex items-center gap-1.5 flex-shrink-0">
+                <span className="text-[10px] tabular-nums text-white">1:32.456</span>
+                <span className="text-[8px] font-bold text-yellow-400">PIT</span>
+                <span className="w-3 h-3 rounded-full flex items-center justify-center text-[6px] font-extrabold leading-none border" style={{ borderColor: "#FF3333", color: "#FF3333" }}>S</span>
+              </span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Full lap-by-lap breakdown showing lap time, tyre compound, and pit stop indicators for each selected driver.</span>
             </div>
           </div>
         </section>
@@ -292,23 +348,23 @@ export default function FeaturesPage() {
           <div className="space-y-3">
             <div className="flex gap-3">
               <span className="w-20 flex-shrink-0 text-sm font-bold text-f1-muted">Speed</span>
-              <span className="text-sm text-f1-text">Vehicle speed in km/h, plotted against track distance.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Vehicle speed in km/h, plotted against track distance.</span>
             </div>
             <div className="flex gap-3">
               <span className="w-20 flex-shrink-0 text-sm font-bold text-f1-muted">Throttle</span>
-              <span className="text-sm text-f1-text">Throttle application from 0-100%.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Throttle application from 0-100%.</span>
             </div>
             <div className="flex gap-3">
               <span className="w-20 flex-shrink-0 text-sm font-bold text-f1-muted">Brake</span>
-              <span className="text-sm text-f1-text">Brake pressure, shown as on/off.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Brake pressure, shown as on/off.</span>
             </div>
             <div className="flex gap-3">
               <span className="w-20 flex-shrink-0 text-sm font-bold text-f1-muted">Gear</span>
-              <span className="text-sm text-f1-text">Current gear selection from 1-8.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">Current gear selection from 1-8.</span>
             </div>
             <div className="flex gap-3">
               <span className="w-20 flex-shrink-0 text-sm font-bold text-f1-muted">DRS</span>
-              <span className="text-sm text-f1-text">DRS activation status. Available for 2025 and earlier sessions. DRS was removed from cars in 2026.</span>
+              <span className="w-full sm:w-auto text-sm text-f1-text">DRS activation status. Available for 2025 and earlier sessions. DRS was removed from cars in 2026.</span>
             </div>
           </div>
         </section>
@@ -405,9 +461,18 @@ export default function FeaturesPage() {
         </section>
 
         <div className="text-center pt-4">
-          <a href="/" className="text-f1-muted hover:text-white transition-colors text-sm">
+          <button
+            onClick={() => {
+              if (window.opener || window.history.length <= 1) {
+                window.close();
+              } else {
+                window.location.href = "/";
+              }
+            }}
+            className="text-f1-muted hover:text-white transition-colors text-sm"
+          >
             Back to session picker
-          </a>
+          </button>
         </div>
       </div>
     </div>
