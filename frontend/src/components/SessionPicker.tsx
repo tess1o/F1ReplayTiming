@@ -390,7 +390,7 @@ export default function SessionPicker() {
           <>
             {/* Live session banner — only show on the year that has the live session */}
             {liveSession && liveSession.year === year && (
-              <div className="mb-8">
+              <div className="mb-8 max-w-3xl mx-auto">
                 <a
                   href={`/live/${liveSession.year}/${liveSession.round_number}?type=${liveSession.session_type}`}
                   onClick={() => setNavigating(true)}
