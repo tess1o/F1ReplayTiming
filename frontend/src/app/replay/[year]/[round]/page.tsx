@@ -55,6 +55,7 @@ export default function ReplayPage() {
   const [pipActive, setPipActive] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [isMediumScreen, setIsMediumScreen] = useState(false);
   const [mobileTrackOpen, setMobileTrackOpen] = useState(true);
   const [mobileLeaderboardOpen, setMobileLeaderboardOpen] = useState(true);
   const [mobileTelemetryOpen, setMobileTelemetryOpen] = useState(false);
@@ -82,7 +83,7 @@ export default function ReplayPage() {
   const [isIOS, setIsIOS] = useState(false);
 
   useEffect(() => {
-    function check() { setIsMobile(window.innerWidth < 640); }
+    function check() { setIsMobile(window.innerWidth < 640); setIsMediumScreen(window.innerWidth >= 640 && window.innerWidth < 1400); }
     check();
     window.addEventListener("resize", check);
     setIsIOS(/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
@@ -345,7 +346,7 @@ export default function ReplayPage() {
         </div>
 
         {/* Track section */}
-        <div className={`sm:flex-1 ${!isMobile && showTelemetry && selectedDrivers.length > 2 ? `flex ${effectiveTelemetryPosition === "left" ? "flex-row" : "flex-col"} min-h-0` : "relative"}`}>
+        <div className={`sm:flex-1 min-w-0 ${!isMobile && showTelemetry && selectedDrivers.length > 2 ? `flex ${effectiveTelemetryPosition === "left" ? "flex-row" : "flex-col"} min-h-0` : "relative"}`}>
           {/* Mobile section header */}
           {isMobile && (
             <button
@@ -663,7 +664,7 @@ export default function ReplayPage() {
               className={`flex-shrink-0 ${
                 effectiveTelemetryPosition === "left"
                   ? "h-full bg-f1-card border-r border-f1-border order-first px-3 py-2 overflow-y-auto overflow-x-hidden"
-                  : "border-t border-f1-border py-1 flex overflow-hidden"
+                  : `border-t border-f1-border py-1 flex ${lapAnalysisOpen && isMediumScreen ? "flex-col overflow-y-auto" : "overflow-hidden"}`
               }`}
               style={effectiveTelemetryPosition === "left" && rcPinned && telemetryWidth > 0 ? { width: telemetryWidth + 24 } : undefined}
             >
@@ -699,7 +700,7 @@ export default function ReplayPage() {
               {/* Race Control in panel: show button or pinned messages */}
               {!rcPinned && (
                 <div className={`flex items-center justify-center ${
-                  effectiveTelemetryPosition === "bottom"
+                  effectiveTelemetryPosition === "bottom" && !(lapAnalysisOpen && isMediumScreen)
                     ? "border-l border-f1-border px-4"
                     : "border-t border-f1-border py-2 mt-2"
                 }`}>
@@ -714,7 +715,7 @@ export default function ReplayPage() {
               {rcPinned && (
                 <div
                   className={`bg-f1-card ${
-                    effectiveTelemetryPosition === "bottom"
+                    effectiveTelemetryPosition === "bottom" && !(lapAnalysisOpen && isMediumScreen)
                       ? "border-l border-f1-border px-3 pt-1 flex-1 overflow-hidden flex flex-col"
                     : "border-t border-f1-border px-3 py-2 mt-2"
                   }`}
@@ -787,10 +788,10 @@ export default function ReplayPage() {
 
         {/* Leaderboard section (with optional lap analysis panel on desktop) */}
         {settings.showLeaderboard && (
-          <div className={`flex-shrink-0 flex ${isMobile ? "" : "border-l"} border-f1-border`} style={{ width: isMobile ? "100%" : undefined }}>
+          <div className={`${lapAnalysisOpen ? "flex-shrink" : "flex-shrink-0"} flex ${isMobile ? "" : "border-l"} border-f1-border overflow-hidden`} style={{ width: isMobile ? "100%" : undefined }}>
             {/* Lap Analysis Panel - desktop only, left of leaderboard */}
             {!isMobile && isRace && lapAnalysisOpen && lapsResponse?.laps && (
-              <div className="w-[300px] h-full border-r border-f1-border overflow-hidden flex-shrink-0">
+              <div className="w-[280px] h-full border-r border-f1-border overflow-hidden flex-shrink-0">
                 <LapAnalysisPanel laps={lapsResponse.laps} drivers={drivers} currentLap={replay.frame?.lap || 0} onClose={() => setLapAnalysisOpen(false)} />
               </div>
             )}

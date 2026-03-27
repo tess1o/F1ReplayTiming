@@ -2,6 +2,14 @@
 
 All notable changes to F1 Timing Replay will be documented in this file.
 
+## 1.3.1
+
+### Fixes
+- **Live session banner width** — live session card on the home page now matches the width of the round cards
+- **Medium screen layout** — track map, lap analysis panel, and leaderboard no longer overflow on tablet-sized screens when lap analysis is open
+
+---
+
 ## 1.3.0
 
 ### New Features
