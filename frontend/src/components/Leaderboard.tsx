@@ -320,17 +320,8 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
                 }
                 const isPersonalBest = lastSecs <= personalBest + 0.0005;
 
-                // Check overall fastest (all drivers' laps 2+ up to current)
-                let overallFastest = Infinity;
-                if (isPersonalBest && lapData) {
-                  for (const [, laps] of lapData) {
-                    for (let l = 2; l <= currentLap; l++) {
-                      const t = laps.get(l);
-                      if (t) { const s = toSecs(t); if (s < overallFastest) overallFastest = s; }
-                    }
-                  }
-                }
-                const isFastest = isPersonalBest && lastSecs <= overallFastest + 0.0005;
+                // Purple: backend says this driver holds fastest lap AND their last lap equals their personal best
+                const isFastest = drv.has_fastest_lap && isPersonalBest;
 
                 const color = isFastest ? "text-purple-400" : isPersonalBest ? "text-green-400" : "text-f1-muted";
 
