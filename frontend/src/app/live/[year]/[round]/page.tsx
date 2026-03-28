@@ -599,57 +599,157 @@ export default function LivePage() {
             >
               Delay: {delayOffset > 0 ? "+" : ""}{delayOffset}s
             </button>
-            {showDelaySlider && (
-              <div className="absolute bottom-full right-0 mb-2 bg-f1-card border border-f1-border rounded-lg p-3 shadow-xl z-50 w-56">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[10px] font-bold text-f1-muted uppercase">Broadcast Delay</span>
-                  <button
-                    onClick={() => { setDelayOffset(0); }}
-                    className="text-[10px] text-f1-muted hover:text-white"
-                  >
-                    Reset
+            {showDelaySlider && (<>
+              {/* Modal backdrop */}
+              <div className="fixed inset-0 bg-black/50 z-40" onClick={() => setShowDelaySlider(false)} />
+
+              {/* Delay modal */}
+              <div className="fixed inset-x-6 top-1/2 -translate-y-1/2 sm:inset-auto sm:top-1/2 sm:left-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 z-50 sm:w-[360px] bg-[#1A1A26] border border-f1-border rounded-xl shadow-2xl overflow-hidden">
+                <div className="flex items-center justify-between px-4 sm:px-5 py-3 border-b border-f1-border">
+                  <span className="text-sm font-bold text-white">Broadcast Delay</span>
+                  <button onClick={() => setShowDelaySlider(false)} className="text-f1-muted hover:text-white">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
                   </button>
                 </div>
-                <input
-                  type="range"
-                  min={-60}
-                  max={10}
-                  step={0.5}
-                  value={delayOffset}
-                  onChange={(e) => setDelayOffset(Number(e.target.value))}
-                  className="w-full h-1 bg-f1-border rounded-lg appearance-none cursor-pointer accent-blue-500"
-                />
-                <div className="flex justify-between text-[9px] text-f1-muted mt-1">
-                  <span>-60s</span>
-                  <span>+10s</span>
+
+                <div className="px-3 sm:px-5 py-3 sm:py-4 space-y-3 sm:space-y-4">
+                  {/* Current value display */}
+                  <div className="text-center">
+                    <span className="text-3xl font-extrabold text-white tabular-nums">{delayOffset.toFixed(1)}</span>
+                    <span className="text-lg text-f1-muted ml-1">seconds</span>
+                  </div>
+
+                  {/* Slider */}
+                  {/* Slider with zero tick mark */}
+                  <div className="relative">
+                    <input
+                      type="range"
+                      min={-60}
+                      max={10}
+                      step={0.5}
+                      value={delayOffset}
+                      onChange={(e) => setDelayOffset(Number(e.target.value))}
+                      className="w-full h-1.5 bg-f1-border rounded-lg appearance-none cursor-pointer accent-blue-500 relative z-10"
+                    />
+                    {/* Zero tick — positioned absolutely over the slider */}
+                    <div
+                      className="absolute pointer-events-none z-20"
+                      style={{ left: `calc(${(60 / 70) * 100}% - 6px)`, top: "calc(50% + 3px)", transform: "translate(-50%, -50%)" }}
+                    >
+                      <div className="w-px h-4 bg-white/40" />
+                    </div>
+                  </div>
+                  <div className="relative flex justify-between text-[10px] text-f1-muted mt-1">
+                    <span>-60s</span>
+                    <span className="absolute text-[10px]" style={{ left: `calc(${(60 / 70) * 100}% - 5px)`, transform: "translateX(-50%)" }}>0s</span>
+                    <span>+10s</span>
+                  </div>
+
+                  {/* Quick adjust buttons */}
+                  <div className="flex items-center justify-center gap-1">
+                    {[
+                      { label: "-5s", delta: -5 },
+                      { label: "-1s", delta: -1 },
+                      { label: "-0.5s", delta: -0.5 },
+                    ].map(({ label, delta }) => (
+                      <button
+                        key={label}
+                        onClick={() => setDelayOffset(Math.max(-60, Math.min(10, Math.round((delayOffset + delta) * 2) / 2)))}
+                        className="px-2 py-1.5 bg-f1-dark border border-f1-border rounded text-[11px] font-bold text-f1-muted hover:text-white hover:border-blue-500/50 transition-colors"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                    <span className="w-8" />
+                    {[
+                      { label: "+0.5s", delta: 0.5 },
+                      { label: "+1s", delta: 1 },
+                      { label: "+5s", delta: 5 },
+                    ].map(({ label, delta }) => (
+                      <button
+                        key={label}
+                        onClick={() => setDelayOffset(Math.max(-60, Math.min(10, Math.round((delayOffset + delta) * 2) / 2)))}
+                        className="px-2 py-1.5 bg-f1-dark border border-f1-border rounded text-[11px] font-bold text-f1-muted hover:text-white hover:border-blue-500/50 transition-colors"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Manual input */}
+                  <div className="flex items-center justify-center gap-2">
+                    <label className="text-xs text-f1-muted">Exact:</label>
+                    <div className="flex items-center bg-f1-dark border border-f1-border rounded overflow-hidden focus-within:border-blue-500">
+                      <button
+                        id="delay-sign-btn"
+                        onClick={() => {
+                          const btn = document.getElementById("delay-sign-btn") as HTMLButtonElement;
+                          const current = btn.textContent === "−" ? "−" : "+";
+                          btn.textContent = current === "−" ? "+" : "−";
+                        }}
+                        className="px-2 py-1.5 text-sm font-bold text-f1-muted hover:text-white border-r border-f1-border transition-colors w-8 text-center"
+                      >
+                        −
+                      </button>
+                      <input
+                        id="delay-exact-input"
+                        type="text"
+                        inputMode="decimal"
+                        onFocus={(e) => { e.target.value = ""; }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            const raw = (e.target as HTMLInputElement).value;
+                            if (raw === "") return;
+                            const v = Math.abs(Number(raw));
+                            if (isNaN(v)) return;
+                            const sign = (document.getElementById("delay-sign-btn") as HTMLButtonElement)?.textContent === "−" ? -1 : 1;
+                            setDelayOffset(Math.max(-60, Math.min(10, Math.round(v * sign * 2) / 2)));
+                            (e.target as HTMLInputElement).value = "";
+                          }
+                        }}
+                        className="w-16 px-2 py-1.5 bg-transparent text-sm text-white text-center focus:outline-none"
+                      />
+                    </div>
+                    <button
+                      onClick={() => {
+                        const input = document.getElementById("delay-exact-input") as HTMLInputElement;
+                        if (!input || input.value === "") return;
+                        const v = Math.abs(Number(input.value));
+                        if (isNaN(v)) return;
+                        const sign = (document.getElementById("delay-sign-btn") as HTMLButtonElement)?.textContent === "−" ? -1 : 1;
+                        setDelayOffset(Math.max(-60, Math.min(10, Math.round(v * sign * 2) / 2)));
+                        input.value = "";
+                      }}
+                      className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold rounded transition-colors"
+                    >
+                      Set
+                    </button>
+                  </div>
+
+                  <p className="text-[10px] text-f1-muted leading-relaxed text-center">
+                    Pauses the live data feed until it aligns with your broadcast. Set this to match the delay of your streaming service.
+                  </p>
+
+                  {/* Actions */}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => { setDelayOffset(0); }}
+                      className="flex-1 px-3 py-2 bg-f1-dark border border-f1-border text-f1-muted hover:text-white text-xs font-bold rounded transition-colors"
+                    >
+                      Reset to 0
+                    </button>
+                    <button
+                      onClick={() => setShowDelaySlider(false)}
+                      className="flex-1 px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold rounded transition-colors"
+                    >
+                      Confirm
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2 mt-2">
-                  <label className="text-[9px] text-f1-muted flex-shrink-0">Exact delay:</label>
-                  <input
-                    type="number"
-                    min={-60}
-                    max={10}
-                    step={0.5}
-                    value={delayOffset}
-                    onChange={(e) => {
-                      const v = Number(e.target.value);
-                      if (!isNaN(v)) setDelayOffset(Math.max(-60, Math.min(10, v)));
-                    }}
-                    className="w-16 px-1.5 py-0.5 bg-f1-dark border border-f1-border rounded text-[10px] text-white text-center focus:outline-none focus:border-blue-500"
-                  />
-                  <span className="text-[9px] text-f1-muted">seconds</span>
-                </div>
-                <p className="text-[9px] text-f1-muted mt-2 leading-relaxed">
-                  Pauses the live data feed until it aligns with your broadcast. Set this to match the delay of your streaming service so the leaderboard updates at the same time as the TV coverage.
-                </p>
-                <button
-                  onClick={() => setShowDelaySlider(false)}
-                  className="w-full mt-2 px-2 py-1 bg-blue-500 hover:bg-blue-600 text-white text-[10px] font-bold rounded transition-colors"
-                >
-                  Confirm
-                </button>
               </div>
-            )}
+            </>)}
           </div>
 
           {/* Live indicator + PiP */}

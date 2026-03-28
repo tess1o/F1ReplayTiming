@@ -6,6 +6,7 @@ All notable changes to F1 Replay Timing will be documented in this file.
 
 ### Improvements
 - **Last lap time colour coding** — purple for the overall fastest lap of the race so far, green for a personal best. Matches F1 timing conventions
+- **Broadcast delay modal** — redesigned as a full-screen modal with large delay display, slider with zero tick mark, +/- quick adjust buttons (0.5s, 1s, 5s), and exact entry with +/− sign toggle and Set button
 - **High contrast text** — toggle in Settings > Other to switch all muted/grey text to white for better readability, especially on lower-brightness screens. Colour-coded elements (intervals, penalties, tyre indicators) are unaffected
 
 ### Fixes
