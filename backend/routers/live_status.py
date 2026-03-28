@@ -5,7 +5,6 @@ the session schedule and known session durations.
 """
 
 import logging
-import os
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter
@@ -47,24 +46,6 @@ async def live_status():
 
     Returns the live session details if found, or null.
     """
-    # Dev override: FAKE_LIVE_SESSION=year,round,type,name,event,country
-    fake = os.environ.get("FAKE_LIVE_SESSION")
-    if fake:
-        parts = fake.split(",")
-        if len(parts) >= 6:
-            return {
-                "live": {
-                    "year": int(parts[0]),
-                    "round_number": int(parts[1]),
-                    "event_name": parts[4],
-                    "country": parts[5],
-                    "session_name": parts[3],
-                    "session_type": parts[2],
-                    "session_start": datetime.now(timezone.utc).isoformat(),
-                    "pre_session": False,
-                }
-            }
-
     now = datetime.now(timezone.utc)
     year = now.year
 
