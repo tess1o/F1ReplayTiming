@@ -294,13 +294,49 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
                   <span className="w-[50px] sm:w-[60px] flex-shrink-0" />
                 );
                 let lastLapTime: string | null = null;
+                let lastLapNum = 0;
                 for (let l = currentLap; l >= 1; l--) {
                   const t = driverLaps.get(l);
-                  if (t) { lastLapTime = t; break; }
+                  if (t) { lastLapTime = t; lastLapNum = l; break; }
                 }
-                return (
+                if (!lastLapTime || lastLapNum < 2 || drv.retired) return (
                   <span className="w-[50px] sm:w-[60px] flex-shrink-0 text-[11px] sm:text-xs text-right tabular-nums text-f1-muted" title="Last lap time">
                     {drv.retired ? "" : (lastLapTime || "")}
+                  </span>
+                );
+
+                // Parse time string to seconds for comparison
+                const toSecs = (t: string): number => {
+                  const p = t.split(":");
+                  return p.length === 2 ? parseInt(p[0]) * 60 + parseFloat(p[1]) : parseFloat(p[0]) || Infinity;
+                };
+                const lastSecs = toSecs(lastLapTime);
+
+                // Check personal best (this driver's laps 2+ up to current)
+                let personalBest = Infinity;
+                for (let l = 2; l <= currentLap; l++) {
+                  const t = driverLaps.get(l);
+                  if (t) { const s = toSecs(t); if (s < personalBest) personalBest = s; }
+                }
+                const isPersonalBest = lastSecs <= personalBest + 0.0005;
+
+                // Check overall fastest (all drivers' laps 2+ up to current)
+                let overallFastest = Infinity;
+                if (isPersonalBest && lapData) {
+                  for (const [, laps] of lapData) {
+                    for (let l = 2; l <= currentLap; l++) {
+                      const t = laps.get(l);
+                      if (t) { const s = toSecs(t); if (s < overallFastest) overallFastest = s; }
+                    }
+                  }
+                }
+                const isFastest = isPersonalBest && lastSecs <= overallFastest + 0.0005;
+
+                const color = isFastest ? "text-purple-400" : isPersonalBest ? "text-green-400" : "text-f1-muted";
+
+                return (
+                  <span className={`w-[50px] sm:w-[60px] flex-shrink-0 text-[11px] sm:text-xs text-right tabular-nums ${color}`} title="Last lap time">
+                    {lastLapTime}
                   </span>
                 );
               })()}
