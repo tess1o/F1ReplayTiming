@@ -1,6 +1,16 @@
 # Changelog
 
-All notable changes to F1 Timing Replay will be documented in this file.
+All notable changes to F1 Replay Timing will be documented in this file.
+
+## 1.3.2
+
+### Improvements
+- **High contrast text** — toggle in Settings > Other to switch all muted/grey text to white for better readability, especially on lower-brightness screens. Colour-coded elements (intervals, penalties, tyre indicators) are unaffected
+
+### Fixes
+- **Minor UI layout fixes** — improved spacing and alignment across mobile, tablet, and desktop screen sizes
+
+---
 
 ## 1.3.1
 

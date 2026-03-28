@@ -157,17 +157,17 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
             <button
               key={drv.abbr}
               onClick={() => onDriverClick(drv.abbr)}
-              className={`w-full flex items-center px-2 py-1 hover:bg-white/5 transition-colors text-left ${
+              className={`w-full flex items-center px-1 sm:px-2 py-1 hover:bg-white/5 transition-colors text-left ${
                 isHighlighted ? "bg-white/10" : ""
               } ${drv.no_timing ? "opacity-40" : ""}`}
             >
-              {/* Position - 24px */}
+              {/* Position - 20px mobile, 24px desktop */}
               {isLeader ? (
-                <span className="w-6 h-6 flex items-center justify-center rounded bg-f1-red text-white text-sm font-extrabold flex-shrink-0">
+                <span className="w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded bg-f1-red text-white text-[14px] sm:text-sm font-extrabold flex-shrink-0">
                   {drv.position}
                 </span>
               ) : (
-                <span className="w-6 text-sm font-extrabold text-white text-right flex-shrink-0">
+                <span className="w-5 sm:w-6 text-[14px] sm:text-sm font-extrabold text-white text-right flex-shrink-0">
                   {drv.position ?? "-"}
                 </span>
               )}
@@ -281,7 +281,7 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
                     </span>
                   )
                 ) : (
-                  <span className={`w-14 flex-shrink-0 text-xs font-bold text-left tabular-nums text-f1-muted sm:ml-0 ml-3`} title="Gap to leader">
+                  <span className={`w-14 flex-shrink-0 text-xs font-bold text-left tabular-nums text-f1-muted ml-3 sm:ml-2`} title="Gap to leader">
                     {displayGap}
                   </span>
                 )
@@ -291,7 +291,7 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
               {isRace && settings.showLastLapTime && (() => {
                 const driverLaps = lapData?.get(drv.abbr);
                 if (!driverLaps || !currentLap || currentLap < 2) return (
-                  <span className="w-[52px] sm:w-[60px] flex-shrink-0" />
+                  <span className="w-[50px] sm:w-[60px] flex-shrink-0" />
                 );
                 let lastLapTime: string | null = null;
                 for (let l = currentLap; l >= 1; l--) {
@@ -299,7 +299,7 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
                   if (t) { lastLapTime = t; break; }
                 }
                 return (
-                  <span className="w-[52px] sm:w-[60px] flex-shrink-0 text-[11px] sm:text-xs text-right tabular-nums text-f1-muted" title="Last lap time">
+                  <span className="w-[50px] sm:w-[60px] flex-shrink-0 text-[11px] sm:text-xs text-right tabular-nums text-f1-muted" title="Last lap time">
                     {drv.retired ? "" : (lastLapTime || "")}
                   </span>
                 );

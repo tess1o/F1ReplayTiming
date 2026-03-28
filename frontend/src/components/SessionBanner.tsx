@@ -60,6 +60,7 @@ const TRACK_MAP_SETTINGS: { key: keyof ReplaySettings; label: string }[] = [
 const OTHER_SETTINGS: { key: keyof ReplaySettings; label: string }[] = [
   { key: "showSessionTime", label: "Total session time" },
   { key: "useImperial", label: "Imperial units (°F, mph)" },
+  { key: "highContrast", label: "High contrast text" },
 ];
 
 export default function SessionBanner({
@@ -207,7 +208,7 @@ export default function SessionBanner({
               <div className="fixed inset-0 bg-black/50 z-40" onClick={() => setSettingsOpen(false)} />
 
               {/* Settings modal */}
-              <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 h-[450px] sm:inset-auto sm:top-1/2 sm:left-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 z-50 sm:w-[520px] sm:h-[420px] bg-[#1A1A26] border border-f1-border rounded-xl shadow-2xl overflow-hidden flex flex-col">
+              <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 h-[450px] sm:inset-auto sm:top-1/2 sm:left-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 z-50 sm:w-[520px] sm:h-[450px] bg-[#1A1A26] border border-f1-border rounded-xl shadow-2xl overflow-hidden flex flex-col">
                 {/* Modal header */}
                 <div className="flex items-center justify-between px-4 py-3 border-b border-f1-border">
                   <span className="text-sm font-bold text-white">Settings</span>
@@ -263,7 +264,7 @@ export default function SessionBanner({
                             {label}
                             {badge && <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-f1-red/20 text-f1-red leading-none">{badge}</span>}
                             {key === "showTeamAbbr" && mobileTeamAbbrHidden && (
-                              <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-yellow-500/20 text-yellow-500 leading-none">Auto-hidden on mobile</span>
+                              <span className="px-1 py-0.5 text-[7px] font-bold uppercase rounded bg-yellow-500/20 text-yellow-500 leading-none">Auto-hidden</span>
                             )}
                           </span>
                           <div className={`relative ${parent ? "w-7 h-4" : "w-9 h-5"} rounded-full transition-colors ${settings[key] ? "bg-f1-red" : "bg-f1-border"}`}>
