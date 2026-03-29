@@ -29,6 +29,8 @@ export interface ReplaySettings {
   useImperial: boolean;
   rcSound: boolean;
   showCorners: boolean;
+  highContrast: boolean;
+  showAllPanels: boolean;
 }
 
 const STORAGE_KEY = "f1replay_settings";
@@ -60,6 +62,8 @@ export const DEFAULTS: ReplaySettings = {
   useImperial: false,
   rcSound: false,
   showCorners: true,
+  highContrast: false,
+  showAllPanels: false,
 };
 
 function loadSettings(): ReplaySettings {
@@ -78,7 +82,11 @@ export function useSettings() {
   const [settings, setSettings] = useState<ReplaySettings>(DEFAULTS);
 
   useEffect(() => {
-    setSettings(loadSettings());
+    const loaded = loadSettings();
+    setSettings(loaded);
+    if (loaded.highContrast) {
+      document.documentElement.classList.add("high-contrast");
+    }
   }, []);
 
   const update = useCallback((key: keyof ReplaySettings, value: boolean) => {
@@ -87,6 +95,9 @@ export function useSettings() {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
       } catch {}
+      if (key === "highContrast") {
+        document.documentElement.classList.toggle("high-contrast", value);
+      }
       return next;
     });
   }, []);

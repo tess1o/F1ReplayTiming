@@ -2,6 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --f1-muted: #6B7280;
+}
+
+.high-contrast {
+  --f1-muted: #FFFFFF;
+}
+
 html,
 body {
   margin: 0;

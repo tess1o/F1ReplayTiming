@@ -353,6 +353,27 @@ def _get_lap_data_sync(year: int, round_num: int, session_type: str = "R") -> li
     session = _load_session(year, round_num, session_type)
     laps = session.laps
 
+    # Compute the replay start offset — must match how replay frames are generated.
+    # Replay uses min(Date) from driver telemetry (get_telemetry()), NOT pos_data.
+    # FastF1 lap Time is relative to t0_date, so: replay_ts = Time - (min_tel_date - t0_date)
+    replay_offset_secs = 0.0
+    try:
+        all_dates = []
+        drivers_list = laps["Driver"].unique().tolist()
+        for drv in drivers_list:
+            drv_laps = laps.pick_drivers(drv)
+            try:
+                tel = drv_laps.get_telemetry()
+                if tel is not None and "Date" in tel.columns and len(tel) > 0:
+                    all_dates.extend(tel["Date"].dropna().tolist())
+            except Exception:
+                continue
+        if all_dates and hasattr(session, "t0_date") and session.t0_date is not None:
+            min_date = min(all_dates)
+            replay_offset_secs = (min_date - session.t0_date).total_seconds()
+    except Exception:
+        replay_offset_secs = 0.0
+
     result = []
     for _, lap in laps.iterrows():
         def fmt_time(td):
@@ -365,11 +386,17 @@ def _get_lap_data_sync(year: int, round_num: int, session_type: str = "R") -> li
                 return f"{mins}:{secs:06.3f}"
             return f"{secs:.3f}"
 
+        # Lap completion time relative to replay start (not session start)
+        lap_end_time = None
+        if pd.notna(lap.get("Time")):
+            lap_end_time = round(lap["Time"].total_seconds() - replay_offset_secs, 3)
+
         result.append({
             "driver": str(lap.get("Driver", "")),
             "lap_number": int(lap.get("LapNumber", 0)),
             "position": int(lap["Position"]) if pd.notna(lap.get("Position")) else None,
             "lap_time": fmt_time(lap.get("LapTime")),
+            "time": lap_end_time,
             "sector1": fmt_time(lap.get("Sector1Time")),
             "sector2": fmt_time(lap.get("Sector2Time")),
             "sector3": fmt_time(lap.get("Sector3Time")),
@@ -852,12 +879,12 @@ def _get_driver_positions_by_time_sync(
             driver_best_lap_events[drv] = events
             driver_lap_completions[drv] = completions
 
-    # For qualifying sessions: build sector completion events per driver
+    # For qualifying and practice sessions: build sector completion events per driver
     # Each entry: (session_time, sector_num, sector_time_seconds, lap_number, is_out_lap)
     # Also pre-compute which laps are out laps (lap 1 or first lap after pit exit)
     driver_sector_events: dict[str, list[tuple[float, int, float, int, bool]]] = {}
     driver_out_laps: dict[str, set[int]] = {}
-    if session_type in ("Q", "SQ"):
+    if session_type in ("Q", "SQ", "FP1", "FP2", "FP3"):
         for drv in drivers_list:
             drv_laps_df = laps.pick_drivers(drv).sort_values("LapNumber")
             sector_events = []
@@ -900,16 +927,21 @@ def _get_driver_positions_by_time_sync(
 
     # Compute session time offset: t_sec (from min_date) + session_time_offset = session timedelta
     # This is needed because gap data uses session timedeltas, not min_date offsets
+    is_practice = session_type in ("FP1", "FP2", "FP3")
     session_time_offset = 0.0
-    for tel in driver_pos_data.values():
-        if "SessionTime" in tel.columns and "Date" in tel.columns and len(tel) > 0:
-            # Find the entry closest to min_date
-            diffs = (tel["Date"] - min_date).abs()
-            closest_idx = diffs.idxmin()
-            st = tel.loc[closest_idx, "SessionTime"]
-            if pd.notna(st):
-                session_time_offset = st.total_seconds()
-                break
+    if is_practice and hasattr(session, "t0_date") and session.t0_date is not None:
+        # For practice: use direct calculation from t0_date to min_date
+        session_time_offset = (min_date - session.t0_date).total_seconds()
+    else:
+        for tel in driver_pos_data.values():
+            if "SessionTime" in tel.columns and "Date" in tel.columns and len(tel) > 0:
+                # Find the entry closest to min_date
+                diffs = (tel["Date"] - min_date).abs()
+                closest_idx = diffs.idxmin()
+                st = tel.loc[closest_idx, "SessionTime"]
+                if pd.notna(st):
+                    session_time_offset = st.total_seconds()
+                    break
 
     # Pre-compute track status (yellow/SC/VSC/red) lookup
     # track_status Time is a session timedelta, same as gap data
@@ -1442,8 +1474,8 @@ def _get_driver_positions_by_time_sync(
                     d["gap"] = "No time"
                     d["no_timing"] = False
 
-            # Add live sector indicators for qualifying
-            if session_type in ("Q", "SQ"):
+            # Add live sector indicators for qualifying and practice
+            if session_type in ("Q", "SQ", "FP1", "FP2", "FP3"):
                 # Track overall best and personal best sector times up to now
                 overall_best_sectors: dict[int, float] = {}  # sector_num -> best time
                 personal_best_sectors: dict[str, dict[int, float]] = {}  # driver -> sector_num -> best time

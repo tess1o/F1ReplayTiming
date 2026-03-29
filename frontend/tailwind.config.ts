@@ -11,7 +11,7 @@ const config: Config = {
           surface: "#1A1A26",
           card: "#1E1E2E",
           border: "#2A2A3C",
-          muted: "#6B7280",
+          muted: "var(--f1-muted)",
           text: "#E5E7EB",
         },
         tyre: {

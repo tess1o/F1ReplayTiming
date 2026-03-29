@@ -63,7 +63,9 @@ export default function ReplayPage() {
   const [lapAnalysisOpen, setLapAnalysisOpen] = useState(false);
   const [mobileLapAnalysisOpen, setMobileLapAnalysisOpen] = useState(false);
   // Force telemetry to bottom when lap analysis panel is open to avoid squashing the track map
-  const effectiveTelemetryPosition = lapAnalysisOpen && telemetryPosition === "left" ? "bottom" : telemetryPosition;
+  // effectiveTelemetryPosition is computed later after settings is available
+  const [forceBottomTelemetry, setForceBottomTelemetry] = useState(false);
+  const effectiveTelemetryPosition = (lapAnalysisOpen || forceBottomTelemetry) && telemetryPosition === "left" ? "bottom" : telemetryPosition;
   const [leaderboardScale, setLeaderboardScale] = useState(1);
   const [pipTrackOpen, setPipTrackOpen] = useState(true);
   const [pipTelemetryOpen, setPipTelemetryOpen] = useState(false);
@@ -73,6 +75,46 @@ export default function ReplayPage() {
   const [sectorFocusDriver, setSectorFocusDriver] = useState<string | null>(null);
   const [rcPanelOpen, setRcPanelOpen] = useState(false);
   const [rcPinned, setRcPinned] = useState(false);
+
+  // Persist panel layout per session type
+  const layoutCategory = sessionType === "R" || sessionType === "S" ? "race"
+    : sessionType === "Q" || sessionType === "SQ" ? "qualifying"
+    : "practice";
+  const layoutKey = `f1replay_layout_${layoutCategory}`;
+  const layoutLoadedRef = useRef(false);
+
+  // Load saved layout on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(layoutKey);
+      if (saved) {
+        const layout = JSON.parse(saved);
+        if (layout.showTelemetry != null) setShowTelemetry(layout.showTelemetry);
+        if (layout.telemetryPosition != null) setTelemetryPosition(layout.telemetryPosition);
+        if (layout.rcPinned != null) setRcPinned(layout.rcPinned);
+        if (layout.rcPanelOpen != null) setRcPanelOpen(layout.rcPanelOpen);
+        if (layout.lapAnalysisOpen != null) setLapAnalysisOpen(layout.lapAnalysisOpen);
+        if (layout.showSectorOverlay != null) setShowSectorOverlay(layout.showSectorOverlay);
+      }
+    } catch {}
+    // Allow saving after load completes
+    setTimeout(() => { layoutLoadedRef.current = true; }, 100);
+  }, [layoutKey]);
+
+  // Save layout when panel states change (only after initial load)
+  useEffect(() => {
+    if (!layoutLoadedRef.current) return;
+    try {
+      localStorage.setItem(layoutKey, JSON.stringify({
+        showTelemetry,
+        telemetryPosition,
+        rcPinned,
+        rcPanelOpen,
+        lapAnalysisOpen,
+        showSectorOverlay,
+      }));
+    } catch {}
+  }, [showTelemetry, telemetryPosition, rcPinned, rcPanelOpen, lapAnalysisOpen, showSectorOverlay, layoutKey]);
   const [rcPanelSize, setRcPanelSize] = useState<"sm" | "md" | "lg">("md");
   const [rcPosition, setRcPosition] = useState<{ x: number; y: number } | null>(null);
   const rcDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
@@ -146,16 +188,15 @@ export default function ReplayPage() {
   );
 
   // Fetch lap data for last lap time column (race/sprint only)
+  // Fetch lap data for last lap time column (all session types)
   const { data: lapsResponse } = useApi<{ laps: LapEntry[] }>(
-    sessionType === "R" || sessionType === "S"
-      ? `/api/sessions/${year}/${round}/laps?type=${sessionType}`
-      : null,
+    `/api/sessions/${year}/${round}/laps?type=${sessionType}`,
   );
 
   // Build lookup: driver -> lap_number -> lap_time
   const lapData = useMemo(() => {
     if (!lapsResponse?.laps) return undefined;
-    const map = new Map<string, Map<number, string>>();
+    const map = new Map<string, Map<number, { time: string; completedAt: number | null }>>();
     for (const lap of lapsResponse.laps) {
       if (!lap.lap_time) continue;
       let driverMap = map.get(lap.driver);
@@ -163,7 +204,7 @@ export default function ReplayPage() {
         driverMap = new Map();
         map.set(lap.driver, driverMap);
       }
-      driverMap.set(lap.lap_number, lap.lap_time);
+      driverMap.set(lap.lap_number, { time: lap.lap_time, completedAt: lap.time ?? null });
     }
     return map;
   }, [lapsResponse]);
@@ -199,6 +240,21 @@ export default function ReplayPage() {
     }
   }, [selectedDrivers.length, showTelemetry, effectiveTelemetryPosition]);
 
+  const isRace = sessionType === "R" || sessionType === "S";
+
+  // "Open all data panels" — must be before early returns to maintain hook order
+  useEffect(() => {
+    if (settings.showAllPanels) {
+      setShowTelemetry(true);
+      setRcPinned(true);
+      setRcPanelOpen(false);
+      setForceBottomTelemetry(true);
+      if (isRace) setLapAnalysisOpen(true);
+    } else {
+      setForceBottomTelemetry(false);
+    }
+  }, [settings.showAllPanels]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const isLoading = sessionLoading || trackLoading;
   const dataError = sessionError || trackError;
 
@@ -207,10 +263,12 @@ export default function ReplayPage() {
     return (
       <div className="min-h-screen bg-f1-dark flex items-center justify-center">
         <div className="text-center">
-          <div className="inline-block w-12 h-12 border-3 border-f1-muted border-t-f1-red rounded-full animate-spin mb-6" />
-          <p className="text-f1-muted text-lg">Loading session data...</p>
+          <div className="inline-block w-12 h-12 border-[3px] border-f1-muted border-t-f1-red rounded-full animate-spin mb-6" />
+          <p className="text-white text-lg font-bold">
+            {replay.statusMessage || "Loading session data..."}
+          </p>
           <p className="text-f1-muted text-sm mt-2">
-            First load may take up to 60 seconds while data is fetched
+            {replay.statusMessage ? "This may take a few minutes the first time a session loads" : "First load may take up to 60 seconds while data is fetched"}
           </p>
         </div>
       </div>
@@ -245,14 +303,26 @@ export default function ReplayPage() {
     ? Math.max(0, redFlagEnd - replay.frame.timestamp)
     : null;
   const weather = replay.frame?.weather;
-  const isRace = sessionType === "R" || sessionType === "S";
   const isQualifying = sessionType === "Q" || sessionType === "SQ";
+  const isPractice = sessionType === "FP1" || sessionType === "FP2" || sessionType === "FP3";
+  const hasSectors = isQualifying || isPractice;
+
+  // Turn off showAllPanels when user manually closes any panel
+  function closePanel(closeFn: () => void) {
+    closeFn();
+    if (settings.showAllPanels) updateSetting("showAllPanels", false);
+  }
+
+  // For practice sessions, cap the total time at the official session duration (60 min)
+  // so the "remaining" timer is accurate rather than including post-session telemetry
+  const PRACTICE_DURATION = 3600; // 60 minutes
+  const effectiveTotalTime = isPractice ? Math.min(replay.totalTime, PRACTICE_DURATION) : replay.totalTime;
 
   // Compute sector overlay for track map
   const SECTOR_HEX: Record<string, string> = { purple: "#A855F7", green: "#22C55E", yellow: "#EAB308" };
   const DEFAULT_SECTOR = "#3A3A4A";
   const sectorOverlay: SectorOverlay | null = (() => {
-    if (!isQualifying || !showSectorOverlay || !trackData?.sector_boundaries) return null;
+    if (!hasSectors || !showSectorOverlay || !trackData?.sector_boundaries) return null;
     const target = sectorFocusDriver && selectedDrivers.includes(sectorFocusDriver)
       ? sectorFocusDriver
       : null;
@@ -276,9 +346,9 @@ export default function ReplayPage() {
     if (!isRace) w += 18; // pit indicator (P box + margin)
     if (isRace && settings.showGridChange) w += 24;
     if (!isRace && settings.showBestLapTime) w += 60; // best lap time column
-    if (isRace && settings.showLastLapTime) w += 60; // last lap time column
-    if (settings.showGapToLeader) w += 56;
-    if (isQualifying && settings.showSectors) w += 36; // sector indicators (28 + 8 margin)
+    if (settings.showLastLapTime) w += 60; // last lap time column
+    if (settings.showGapToLeader) w += 56 + (!isRace ? 8 : 0); // extra margin between lap time and gap in practice/qualifying
+    if (hasSectors && settings.showSectors) w += 36; // sector indicators (28 + 8 margin)
     if (isRace && settings.showPitStops) w += 24;
     if (isRace && settings.showTyreHistory) w += 36;
     if (settings.showTyreType) w += 24;
@@ -346,7 +416,7 @@ export default function ReplayPage() {
         </div>
 
         {/* Track section */}
-        <div className={`sm:flex-1 min-w-0 ${!isMobile && showTelemetry && selectedDrivers.length > 2 ? `flex ${effectiveTelemetryPosition === "left" ? "flex-row" : "flex-col"} min-h-0` : "relative"}`}>
+        <div className={`sm:flex-1 min-w-0 ${!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels || rcPinned) ? `flex ${effectiveTelemetryPosition === "left" ? "flex-row" : "flex-col"} min-h-0` : "relative"}`}>
           {/* Mobile section header */}
           {isMobile && (
             <button
@@ -361,7 +431,7 @@ export default function ReplayPage() {
           )}
 
           {(!isMobile || mobileTrackOpen) && (
-            <div className={`h-[42vh] sm:h-full relative ${!isMobile && showTelemetry && selectedDrivers.length > 2 ? "flex-1 min-w-0 min-h-0" : ""}`}>
+            <div className={`h-[42vh] sm:h-full relative ${!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels || rcPinned) ? "flex-1 min-w-0 min-h-0" : ""}`}>
               {/* Flag badge */}
               {trackStatus !== "green" && (
                 <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
@@ -528,7 +598,7 @@ export default function ReplayPage() {
               {/* Telemetry now in bottom drawer */}
 
               {/* Sector overlay toggle - desktop qualifying only */}
-              {!isMobile && isQualifying && trackData?.sector_boundaries && (
+              {!isMobile && hasSectors && trackData?.sector_boundaries && (
                 <div className="absolute bottom-2 right-36 z-20 flex items-center gap-1">
                   {showSectorOverlay && selectedDrivers.length === 0 && (
                     <span className="text-[10px] text-f1-muted mr-1">Select a driver to view sectors</span>
@@ -567,7 +637,7 @@ export default function ReplayPage() {
               )}
 
               {/* Sector overlay controls - mobile qualifying only */}
-              {isMobile && isQualifying && trackData?.sector_boundaries && (
+              {isMobile && hasSectors && trackData?.sector_boundaries && (
                 <div className="absolute bottom-2 left-2 right-2 z-20 flex items-center gap-1">
                   {showSectorOverlay && selectedDrivers.length > 0 && (
                     <div className="flex items-center gap-1 overflow-x-auto">
@@ -610,7 +680,7 @@ export default function ReplayPage() {
               {/* Fullscreen toggle moved to PlaybackControls */}
 
               {/* Telemetry overlay - desktop only, bottom-left (1-2 drivers) */}
-              {!isMobile && showTelemetry && selectedDrivers.length <= 2 && (
+              {!isMobile && showTelemetry && selectedDrivers.length <= 2 && !settings.showAllPanels && !rcPinned && (
                 <div className="absolute bottom-2 left-3 z-10 flex flex-col gap-1">
                   <button
                     onClick={() => setShowTelemetry(false)}
@@ -630,7 +700,7 @@ export default function ReplayPage() {
               )}
 
               {/* Telemetry toggle - desktop only, bottom-left */}
-              {!isMobile && !showTelemetry && (
+              {!isMobile && !showTelemetry && !settings.showAllPanels && (
                 <button
                   onClick={() => setShowTelemetry(true)}
                   className="absolute bottom-2 left-3 z-20 px-2 py-1 bg-f1-card/90 border border-f1-border rounded text-[10px] font-bold text-f1-muted hover:text-white transition-colors backdrop-blur-sm"
@@ -659,7 +729,7 @@ export default function ReplayPage() {
           )}
 
           {/* Telemetry panel - desktop only (3+ drivers) */}
-          {!isMobile && showTelemetry && selectedDrivers.length > 2 && (
+          {!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels || rcPinned) && (
             <div
               className={`flex-shrink-0 ${
                 effectiveTelemetryPosition === "left"
@@ -672,7 +742,7 @@ export default function ReplayPage() {
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-[10px] font-bold text-f1-muted uppercase">Telemetry</span>
                   {lapAnalysisOpen ? (
-                    <span className="text-[9px] text-f1-muted italic">Shown at bottom while Lap Analysis is open</span>
+                    <span className="text-[9px] text-f1-muted italic">{forceBottomTelemetry ? "Shown at bottom (all panels open)" : "Shown at bottom while Lap Analysis is open"}</span>
                   ) : (
                     <button
                       onClick={() => setTelemetryPosition(telemetryPosition === "left" ? "bottom" : "left")}
@@ -683,17 +753,21 @@ export default function ReplayPage() {
                     </button>
                   )}
                   <button
-                    onClick={() => setShowTelemetry(false)}
+                    onClick={() => closePanel(() => setShowTelemetry(false))}
                     className="px-1.5 py-0.5 text-[9px] font-bold text-f1-muted hover:text-white border border-f1-border rounded transition-colors ml-auto"
                   >
                     Hide
                   </button>
                 </div>
                 <div className="flex flex-col gap-1">
-                  {selectedDrivers.map((abbr) => {
-                    const drv = drivers.find((d) => d.abbr === abbr) || null;
-                    return <TelemetryChart key={abbr} visible driver={drv} year={year} isQualifying={isQualifying} useImperial={settings.useImperial} />;
-                  })}
+                  {selectedDrivers.length > 0 ? (
+                    selectedDrivers.map((abbr) => {
+                      const drv = drivers.find((d) => d.abbr === abbr) || null;
+                      return <TelemetryChart key={abbr} visible driver={drv} year={year} isQualifying={isQualifying} useImperial={settings.useImperial} />;
+                    })
+                  ) : (
+                    <p className="text-[10px] text-f1-muted py-2">Select drivers on the leaderboard to view telemetry</p>
+                  )}
                 </div>
               </div>
 
@@ -724,7 +798,7 @@ export default function ReplayPage() {
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[10px] font-bold text-f1-muted uppercase">Race Control</span>
                     <button
-                      onClick={() => setRcPinned(false)}
+                      onClick={() => closePanel(() => setRcPinned(false))}
                       className="px-1.5 py-0.5 text-[9px] font-bold text-f1-muted hover:text-white border border-f1-border rounded transition-colors"
                     >
                       Hide
@@ -792,7 +866,7 @@ export default function ReplayPage() {
             {/* Lap Analysis Panel - desktop only, left of leaderboard */}
             {!isMobile && isRace && lapAnalysisOpen && lapsResponse?.laps && (
               <div className="w-[280px] h-full border-r border-f1-border overflow-hidden flex-shrink-0">
-                <LapAnalysisPanel laps={lapsResponse.laps} drivers={drivers} currentLap={replay.frame?.lap || 0} onClose={() => setLapAnalysisOpen(false)} />
+                <LapAnalysisPanel laps={lapsResponse.laps} drivers={drivers} currentLap={replay.frame?.lap || 0} onClose={() => closePanel(() => setLapAnalysisOpen(false))} />
               </div>
             )}
 
@@ -859,7 +933,7 @@ export default function ReplayPage() {
         playing={replay.playing}
         speed={replay.speed}
         currentTime={replay.frame?.timestamp || 0}
-        totalTime={replay.totalTime}
+        totalTime={effectiveTotalTime}
         currentLap={replay.frame?.lap || 0}
         totalLaps={replay.totalLaps}
         finished={replay.finished}
@@ -891,9 +965,9 @@ export default function ReplayPage() {
       {/* Document PiP window — visible across tabs */}
       {pipActive && !isMobile && !isIOS && (
         <PiPWindow onClose={() => setPipActive(false)} width={400} height={780}>
-          <div className="flex flex-col h-full bg-f1-dark">
+          <div className="flex flex-col h-full bg-f1-dark overflow-hidden">
             {/* PiP Track Map */}
-            <div>
+            <div className="flex-shrink-0">
               <button
                 onClick={() => setPipTrackOpen(!pipTrackOpen)}
                 className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border"
@@ -952,7 +1026,7 @@ export default function ReplayPage() {
             </div>
 
             {/* PiP Race Control */}
-            <div className="border-t border-f1-border">
+            <div className="flex-shrink-0 border-t border-f1-border">
               <button
                 onClick={() => setPipRcOpen(!pipRcOpen)}
                 className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border"
@@ -986,7 +1060,7 @@ export default function ReplayPage() {
             </div>
 
             {/* PiP Telemetry */}
-            <div className="border-t border-f1-border">
+            <div className="flex-shrink-0 border-t border-f1-border">
               <button
                 onClick={() => setPipTelemetryOpen(!pipTelemetryOpen)}
                 className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border"
@@ -1011,7 +1085,7 @@ export default function ReplayPage() {
             </div>
 
             {/* PiP Leaderboard */}
-            <div className="flex-1 min-h-0 flex flex-col border-t border-f1-border">
+            <div className="flex-1 min-h-0 flex flex-col border-t border-f1-border overflow-hidden">
               <button
                 onClick={() => setPipLeaderboardOpen(!pipLeaderboardOpen)}
                 className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border flex-shrink-0"
@@ -1022,7 +1096,7 @@ export default function ReplayPage() {
                 </svg>
               </button>
               {pipLeaderboardOpen && (
-                <div className="flex-1 min-h-0 overflow-y-auto">
+                <div className="flex-1 min-h-0 overflow-y-auto pb-[80px]">
                   <Leaderboard
                     drivers={drivers}
                     highlightedDrivers={selectedDrivers}
@@ -1045,7 +1119,7 @@ export default function ReplayPage() {
                 playing={replay.playing}
                 speed={replay.speed}
                 currentTime={replay.frame?.timestamp || 0}
-                totalTime={replay.totalTime}
+                totalTime={effectiveTotalTime}
                 currentLap={replay.frame?.lap || 0}
                 totalLaps={replay.totalLaps}
                 finished={replay.finished}

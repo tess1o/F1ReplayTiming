@@ -57,6 +57,17 @@ export default function PiPWindow({
       }
     }
 
+    // Copy CSS custom properties from main document root
+    const mainStyles = getComputedStyle(document.documentElement);
+    const cssVars = ["--f1-muted"];
+    for (const v of cssVars) {
+      pipWin.document.documentElement.style.setProperty(v, mainStyles.getPropertyValue(v));
+    }
+    // Copy high-contrast class if active
+    if (document.documentElement.classList.contains("high-contrast")) {
+      pipWin.document.documentElement.classList.add("high-contrast");
+    }
+
     const mount = pipWin.document.createElement("div");
     mount.id = "pip-root";
     mount.style.width = "100%";
