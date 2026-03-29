@@ -920,7 +920,7 @@ export default function ReplayPage() {
               </svg>
             </button>
             {mobileLapAnalysisOpen && (
-              <div className="bg-f1-card">
+              <div className="bg-f1-card max-h-[60vh] overflow-y-auto">
                 <LapAnalysisPanel laps={lapsResponse.laps} drivers={drivers} currentLap={Math.max(0, (replay.frame?.lap || 0) - 1)} />
               </div>
             )}
