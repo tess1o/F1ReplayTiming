@@ -2,6 +2,14 @@
 
 All notable changes to F1 Replay Timing will be documented in this file.
 
+## 1.3.2.1
+
+### Fixes
+- **Lap analysis lap number** — fixed showing incomplete current lap data; now only displays completed laps
+- **Mobile lap analysis scroll** — section is now scrollable on mobile
+
+---
+
 ## 1.3.2
 
 ### Improvements

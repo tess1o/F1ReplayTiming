@@ -866,7 +866,7 @@ export default function ReplayPage() {
             {/* Lap Analysis Panel - desktop only, left of leaderboard */}
             {!isMobile && isRace && lapAnalysisOpen && lapsResponse?.laps && (
               <div className="w-[280px] h-full border-r border-f1-border overflow-hidden flex-shrink-0">
-                <LapAnalysisPanel laps={lapsResponse.laps} drivers={drivers} currentLap={replay.frame?.lap || 0} onClose={() => closePanel(() => setLapAnalysisOpen(false))} />
+                <LapAnalysisPanel laps={lapsResponse.laps} drivers={drivers} currentLap={Math.max(0, (replay.frame?.lap || 0) - 1)} onClose={() => closePanel(() => setLapAnalysisOpen(false))} />
               </div>
             )}
 
@@ -920,8 +920,8 @@ export default function ReplayPage() {
               </svg>
             </button>
             {mobileLapAnalysisOpen && (
-              <div className="bg-f1-card">
-                <LapAnalysisPanel laps={lapsResponse.laps} drivers={drivers} currentLap={replay.frame?.lap || 0} />
+              <div className="bg-f1-card max-h-[60vh] overflow-y-auto">
+                <LapAnalysisPanel laps={lapsResponse.laps} drivers={drivers} currentLap={Math.max(0, (replay.frame?.lap || 0) - 1)} />
               </div>
             )}
           </div>
