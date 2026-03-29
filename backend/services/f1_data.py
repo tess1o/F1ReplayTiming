@@ -927,16 +927,21 @@ def _get_driver_positions_by_time_sync(
 
     # Compute session time offset: t_sec (from min_date) + session_time_offset = session timedelta
     # This is needed because gap data uses session timedeltas, not min_date offsets
+    is_practice = session_type in ("FP1", "FP2", "FP3")
     session_time_offset = 0.0
-    for tel in driver_pos_data.values():
-        if "SessionTime" in tel.columns and "Date" in tel.columns and len(tel) > 0:
-            # Find the entry closest to min_date
-            diffs = (tel["Date"] - min_date).abs()
-            closest_idx = diffs.idxmin()
-            st = tel.loc[closest_idx, "SessionTime"]
-            if pd.notna(st):
-                session_time_offset = st.total_seconds()
-                break
+    if is_practice and hasattr(session, "t0_date") and session.t0_date is not None:
+        # For practice: use direct calculation from t0_date to min_date
+        session_time_offset = (min_date - session.t0_date).total_seconds()
+    else:
+        for tel in driver_pos_data.values():
+            if "SessionTime" in tel.columns and "Date" in tel.columns and len(tel) > 0:
+                # Find the entry closest to min_date
+                diffs = (tel["Date"] - min_date).abs()
+                closest_idx = diffs.idxmin()
+                st = tel.loc[closest_idx, "SessionTime"]
+                if pd.notna(st):
+                    session_time_offset = st.total_seconds()
+                    break
 
     # Pre-compute track status (yellow/SC/VSC/red) lookup
     # track_status Time is a session timedelta, same as gap data

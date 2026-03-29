@@ -211,7 +211,7 @@ export default function ReplayPage() {
             {replay.statusMessage || "Loading session data..."}
           </p>
           <p className="text-f1-muted text-sm mt-2">
-            {replay.statusMessage ? "This may take a few minutes for first-time sessions" : "First load may take up to 60 seconds while data is fetched"}
+            {replay.statusMessage ? "This may take a few minutes the first time a session loads" : "First load may take up to 60 seconds while data is fetched"}
           </p>
         </div>
       </div>
@@ -898,9 +898,9 @@ export default function ReplayPage() {
       {/* Document PiP window — visible across tabs */}
       {pipActive && !isMobile && !isIOS && (
         <PiPWindow onClose={() => setPipActive(false)} width={400} height={780}>
-          <div className="flex flex-col h-full bg-f1-dark">
+          <div className="flex flex-col h-full bg-f1-dark overflow-hidden">
             {/* PiP Track Map */}
-            <div>
+            <div className="flex-shrink-0">
               <button
                 onClick={() => setPipTrackOpen(!pipTrackOpen)}
                 className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border"
@@ -959,7 +959,7 @@ export default function ReplayPage() {
             </div>
 
             {/* PiP Race Control */}
-            <div className="border-t border-f1-border">
+            <div className="flex-shrink-0 border-t border-f1-border">
               <button
                 onClick={() => setPipRcOpen(!pipRcOpen)}
                 className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border"
@@ -993,7 +993,7 @@ export default function ReplayPage() {
             </div>
 
             {/* PiP Telemetry */}
-            <div className="border-t border-f1-border">
+            <div className="flex-shrink-0 border-t border-f1-border">
               <button
                 onClick={() => setPipTelemetryOpen(!pipTelemetryOpen)}
                 className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border"
@@ -1018,7 +1018,7 @@ export default function ReplayPage() {
             </div>
 
             {/* PiP Leaderboard */}
-            <div className="flex-1 min-h-0 flex flex-col border-t border-f1-border">
+            <div className="flex-1 min-h-0 flex flex-col border-t border-f1-border overflow-hidden">
               <button
                 onClick={() => setPipLeaderboardOpen(!pipLeaderboardOpen)}
                 className="w-full flex items-center justify-between px-3 py-2 bg-f1-card border-b border-f1-border flex-shrink-0"
@@ -1029,7 +1029,7 @@ export default function ReplayPage() {
                 </svg>
               </button>
               {pipLeaderboardOpen && (
-                <div className="flex-1 min-h-0 overflow-y-auto">
+                <div className="flex-1 min-h-0 overflow-y-auto pb-[80px]">
                   <Leaderboard
                     drivers={drivers}
                     highlightedDrivers={selectedDrivers}

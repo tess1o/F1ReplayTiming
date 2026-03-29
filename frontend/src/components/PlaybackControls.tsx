@@ -126,7 +126,7 @@ export default function PlaybackControls({
         <div className="flex items-center gap-2">
           {playPauseBtn}
           <span className="text-xs font-extrabold text-white tabular-nums flex-1">
-            {formatTime(currentTime)}
+            {!isRace && qualiPhase ? formatTime(qualiPhase.remaining) : !isRace ? formatTime(Math.max(0, totalTime - currentTime)) : formatTime(currentTime)}
             {isRace && currentLap > 0 && <span className="text-f1-muted ml-2">L{currentLap}/{totalLaps}</span>}
             {!isRace && qualiPhase && <span className="text-f1-muted ml-2">{qualiPhase.phase}</span>}
           </span>

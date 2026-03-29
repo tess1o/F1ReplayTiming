@@ -7,12 +7,15 @@ All notable changes to F1 Replay Timing will be documented in this file.
 ### Improvements
 - **Last lap time for all sessions** — now available in practice and qualifying. Requires recompute
 - **Last lap colour coding** — purple for fastest lap, green for personal best
-- **Practice session time** — countdown based on 60-minute session duration
 - **Processing feedback** — real-time status messages during on-demand processing
 - **Broadcast delay modal** — redesigned with quick adjust buttons and exact entry
 - **High contrast text** — toggle in Settings > Other for white text on muted elements
 
 ### Fixes
+- **Practice session precompute** — fixed timestamp alignment for practice sessions causing leaderboard to show future data. Requires recompute
+- **Practice session time** — countdown aligned to 60-minute session duration, not overall replay length
+- **Mobile qualifying time** — now shows remaining time counting down, matching desktop
+- **PiP leaderboard scroll** — leaderboard no longer cut off by playback controls
 - **Minor UI layout fixes** — spacing and alignment across mobile, tablet, and desktop
 
 ---
