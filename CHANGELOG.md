@@ -11,6 +11,7 @@ All notable changes to F1 Replay Timing will be documented in this file.
 - **Processing feedback** — real-time status messages during on-demand processing
 - **Broadcast delay modal** — redesigned with quick adjust buttons and exact entry
 - **Open all data panels** — toggle in Settings > Other to open telemetry, race control, and lap analysis (race only) in a single click. Closes automatically when any panel is hidden
+- **Persistent panel layout** — panel states (telemetry, race control, lap analysis, sectors) are remembered per session type (race, qualifying, practice) across page loads
 - **High contrast text** — toggle in Settings > Other for white text on muted elements
 
 ### Fixes

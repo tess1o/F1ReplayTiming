@@ -75,6 +75,46 @@ export default function ReplayPage() {
   const [sectorFocusDriver, setSectorFocusDriver] = useState<string | null>(null);
   const [rcPanelOpen, setRcPanelOpen] = useState(false);
   const [rcPinned, setRcPinned] = useState(false);
+
+  // Persist panel layout per session type
+  const layoutCategory = sessionType === "R" || sessionType === "S" ? "race"
+    : sessionType === "Q" || sessionType === "SQ" ? "qualifying"
+    : "practice";
+  const layoutKey = `f1replay_layout_${layoutCategory}`;
+  const layoutLoadedRef = useRef(false);
+
+  // Load saved layout on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(layoutKey);
+      if (saved) {
+        const layout = JSON.parse(saved);
+        if (layout.showTelemetry != null) setShowTelemetry(layout.showTelemetry);
+        if (layout.telemetryPosition != null) setTelemetryPosition(layout.telemetryPosition);
+        if (layout.rcPinned != null) setRcPinned(layout.rcPinned);
+        if (layout.rcPanelOpen != null) setRcPanelOpen(layout.rcPanelOpen);
+        if (layout.lapAnalysisOpen != null) setLapAnalysisOpen(layout.lapAnalysisOpen);
+        if (layout.showSectorOverlay != null) setShowSectorOverlay(layout.showSectorOverlay);
+      }
+    } catch {}
+    // Allow saving after load completes
+    setTimeout(() => { layoutLoadedRef.current = true; }, 100);
+  }, [layoutKey]);
+
+  // Save layout when panel states change (only after initial load)
+  useEffect(() => {
+    if (!layoutLoadedRef.current) return;
+    try {
+      localStorage.setItem(layoutKey, JSON.stringify({
+        showTelemetry,
+        telemetryPosition,
+        rcPinned,
+        rcPanelOpen,
+        lapAnalysisOpen,
+        showSectorOverlay,
+      }));
+    } catch {}
+  }, [showTelemetry, telemetryPosition, rcPinned, rcPanelOpen, lapAnalysisOpen, showSectorOverlay, layoutKey]);
   const [rcPanelSize, setRcPanelSize] = useState<"sm" | "md" | "lg">("md");
   const [rcPosition, setRcPosition] = useState<{ x: number; y: number } | null>(null);
   const rcDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
@@ -376,7 +416,7 @@ export default function ReplayPage() {
         </div>
 
         {/* Track section */}
-        <div className={`sm:flex-1 min-w-0 ${!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels) ? `flex ${effectiveTelemetryPosition === "left" ? "flex-row" : "flex-col"} min-h-0` : "relative"}`}>
+        <div className={`sm:flex-1 min-w-0 ${!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels || rcPinned) ? `flex ${effectiveTelemetryPosition === "left" ? "flex-row" : "flex-col"} min-h-0` : "relative"}`}>
           {/* Mobile section header */}
           {isMobile && (
             <button
@@ -391,7 +431,7 @@ export default function ReplayPage() {
           )}
 
           {(!isMobile || mobileTrackOpen) && (
-            <div className={`h-[42vh] sm:h-full relative ${!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels) ? "flex-1 min-w-0 min-h-0" : ""}`}>
+            <div className={`h-[42vh] sm:h-full relative ${!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels || rcPinned) ? "flex-1 min-w-0 min-h-0" : ""}`}>
               {/* Flag badge */}
               {trackStatus !== "green" && (
                 <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
@@ -640,7 +680,7 @@ export default function ReplayPage() {
               {/* Fullscreen toggle moved to PlaybackControls */}
 
               {/* Telemetry overlay - desktop only, bottom-left (1-2 drivers) */}
-              {!isMobile && showTelemetry && selectedDrivers.length <= 2 && !settings.showAllPanels && (
+              {!isMobile && showTelemetry && selectedDrivers.length <= 2 && !settings.showAllPanels && !rcPinned && (
                 <div className="absolute bottom-2 left-3 z-10 flex flex-col gap-1">
                   <button
                     onClick={() => setShowTelemetry(false)}
@@ -689,7 +729,7 @@ export default function ReplayPage() {
           )}
 
           {/* Telemetry panel - desktop only (3+ drivers) */}
-          {!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels) && (
+          {!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels || rcPinned) && (
             <div
               className={`flex-shrink-0 ${
                 effectiveTelemetryPosition === "left"

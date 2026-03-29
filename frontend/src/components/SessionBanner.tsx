@@ -57,9 +57,9 @@ const TRACK_MAP_SETTINGS: { key: keyof ReplaySettings; label: string }[] = [
   { key: "showCorners", label: "Corner numbers" },
 ];
 
-const OTHER_SETTINGS: { key: keyof ReplaySettings; label: string }[] = [
+const OTHER_SETTINGS: { key: keyof ReplaySettings; label: string; hint?: string }[] = [
   { key: "showAllPanels", label: "Open all data panels" },
-  { key: "showSessionTime", label: "Total session time" },
+  { key: "showSessionTime", label: "Show total session time", hint: "May indicate red flags and spoilers" },
   { key: "useImperial", label: "Imperial units (°F, mph)" },
   { key: "highContrast", label: "High contrast text" },
 ];
@@ -329,13 +329,16 @@ export default function SessionBanner({
                   </>)}
 
                   {settingsTab === "Other" && (<>
-                    {OTHER_SETTINGS.map(({ key, label }) => (
+                    {OTHER_SETTINGS.map(({ key, label, hint }) => (
                       <button
                         key={key}
                         onClick={() => onSettingChange?.(key, !settings[key])}
                         className="w-full flex items-center justify-between px-2 sm:px-6 py-1.5 hover:bg-white/5 transition-colors"
                       >
-                        <span className="text-sm text-white">{label}</span>
+                        <span className="text-left">
+                          <span className="text-sm text-white block">{label}</span>
+                          {hint && <span className="text-[9px] text-f1-muted block">{hint}</span>}
+                        </span>
                         <div className={`relative w-9 h-5 rounded-full transition-colors ${settings[key] ? "bg-f1-red" : "bg-f1-border"}`}>
                           <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${settings[key] ? "translate-x-[18px]" : "translate-x-0.5"}`} />
                         </div>
