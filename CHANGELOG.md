@@ -10,6 +10,7 @@ All notable changes to F1 Replay Timing will be documented in this file.
 - **Last lap colour coding** — purple for fastest lap, green for personal best
 - **Processing feedback** — real-time status messages during on-demand processing
 - **Broadcast delay modal** — redesigned with quick adjust buttons and exact entry
+- **Open all data panels** — toggle in Settings > Other to open telemetry, race control, and lap analysis (race only) in a single click. Closes automatically when any panel is hidden
 - **High contrast text** — toggle in Settings > Other for white text on muted elements
 
 ### Fixes

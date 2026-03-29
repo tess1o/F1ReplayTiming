@@ -30,6 +30,7 @@ export interface ReplaySettings {
   rcSound: boolean;
   showCorners: boolean;
   highContrast: boolean;
+  showAllPanels: boolean;
 }
 
 const STORAGE_KEY = "f1replay_settings";
@@ -62,6 +63,7 @@ export const DEFAULTS: ReplaySettings = {
   rcSound: false,
   showCorners: true,
   highContrast: false,
+  showAllPanels: false,
 };
 
 function loadSettings(): ReplaySettings {

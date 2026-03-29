@@ -58,6 +58,7 @@ const TRACK_MAP_SETTINGS: { key: keyof ReplaySettings; label: string }[] = [
 ];
 
 const OTHER_SETTINGS: { key: keyof ReplaySettings; label: string }[] = [
+  { key: "showAllPanels", label: "Open all data panels" },
   { key: "showSessionTime", label: "Total session time" },
   { key: "useImperial", label: "Imperial units (°F, mph)" },
   { key: "highContrast", label: "High contrast text" },

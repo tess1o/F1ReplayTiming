@@ -63,7 +63,9 @@ export default function ReplayPage() {
   const [lapAnalysisOpen, setLapAnalysisOpen] = useState(false);
   const [mobileLapAnalysisOpen, setMobileLapAnalysisOpen] = useState(false);
   // Force telemetry to bottom when lap analysis panel is open to avoid squashing the track map
-  const effectiveTelemetryPosition = lapAnalysisOpen && telemetryPosition === "left" ? "bottom" : telemetryPosition;
+  // effectiveTelemetryPosition is computed later after settings is available
+  const [forceBottomTelemetry, setForceBottomTelemetry] = useState(false);
+  const effectiveTelemetryPosition = (lapAnalysisOpen || forceBottomTelemetry) && telemetryPosition === "left" ? "bottom" : telemetryPosition;
   const [leaderboardScale, setLeaderboardScale] = useState(1);
   const [pipTrackOpen, setPipTrackOpen] = useState(true);
   const [pipTelemetryOpen, setPipTelemetryOpen] = useState(false);
@@ -198,6 +200,21 @@ export default function ReplayPage() {
     }
   }, [selectedDrivers.length, showTelemetry, effectiveTelemetryPosition]);
 
+  const isRace = sessionType === "R" || sessionType === "S";
+
+  // "Open all data panels" — must be before early returns to maintain hook order
+  useEffect(() => {
+    if (settings.showAllPanels) {
+      setShowTelemetry(true);
+      setRcPinned(true);
+      setRcPanelOpen(false);
+      setForceBottomTelemetry(true);
+      if (isRace) setLapAnalysisOpen(true);
+    } else {
+      setForceBottomTelemetry(false);
+    }
+  }, [settings.showAllPanels]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const isLoading = sessionLoading || trackLoading;
   const dataError = sessionError || trackError;
 
@@ -246,10 +263,15 @@ export default function ReplayPage() {
     ? Math.max(0, redFlagEnd - replay.frame.timestamp)
     : null;
   const weather = replay.frame?.weather;
-  const isRace = sessionType === "R" || sessionType === "S";
   const isQualifying = sessionType === "Q" || sessionType === "SQ";
   const isPractice = sessionType === "FP1" || sessionType === "FP2" || sessionType === "FP3";
   const hasSectors = isQualifying || isPractice;
+
+  // Turn off showAllPanels when user manually closes any panel
+  function closePanel(closeFn: () => void) {
+    closeFn();
+    if (settings.showAllPanels) updateSetting("showAllPanels", false);
+  }
 
   // For practice sessions, cap the total time at the official session duration (60 min)
   // so the "remaining" timer is accurate rather than including post-session telemetry
@@ -354,7 +376,7 @@ export default function ReplayPage() {
         </div>
 
         {/* Track section */}
-        <div className={`sm:flex-1 min-w-0 ${!isMobile && showTelemetry && selectedDrivers.length > 2 ? `flex ${effectiveTelemetryPosition === "left" ? "flex-row" : "flex-col"} min-h-0` : "relative"}`}>
+        <div className={`sm:flex-1 min-w-0 ${!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels) ? `flex ${effectiveTelemetryPosition === "left" ? "flex-row" : "flex-col"} min-h-0` : "relative"}`}>
           {/* Mobile section header */}
           {isMobile && (
             <button
@@ -369,7 +391,7 @@ export default function ReplayPage() {
           )}
 
           {(!isMobile || mobileTrackOpen) && (
-            <div className={`h-[42vh] sm:h-full relative ${!isMobile && showTelemetry && selectedDrivers.length > 2 ? "flex-1 min-w-0 min-h-0" : ""}`}>
+            <div className={`h-[42vh] sm:h-full relative ${!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels) ? "flex-1 min-w-0 min-h-0" : ""}`}>
               {/* Flag badge */}
               {trackStatus !== "green" && (
                 <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
@@ -618,7 +640,7 @@ export default function ReplayPage() {
               {/* Fullscreen toggle moved to PlaybackControls */}
 
               {/* Telemetry overlay - desktop only, bottom-left (1-2 drivers) */}
-              {!isMobile && showTelemetry && selectedDrivers.length <= 2 && (
+              {!isMobile && showTelemetry && selectedDrivers.length <= 2 && !settings.showAllPanels && (
                 <div className="absolute bottom-2 left-3 z-10 flex flex-col gap-1">
                   <button
                     onClick={() => setShowTelemetry(false)}
@@ -638,7 +660,7 @@ export default function ReplayPage() {
               )}
 
               {/* Telemetry toggle - desktop only, bottom-left */}
-              {!isMobile && !showTelemetry && (
+              {!isMobile && !showTelemetry && !settings.showAllPanels && (
                 <button
                   onClick={() => setShowTelemetry(true)}
                   className="absolute bottom-2 left-3 z-20 px-2 py-1 bg-f1-card/90 border border-f1-border rounded text-[10px] font-bold text-f1-muted hover:text-white transition-colors backdrop-blur-sm"
@@ -667,7 +689,7 @@ export default function ReplayPage() {
           )}
 
           {/* Telemetry panel - desktop only (3+ drivers) */}
-          {!isMobile && showTelemetry && selectedDrivers.length > 2 && (
+          {!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels) && (
             <div
               className={`flex-shrink-0 ${
                 effectiveTelemetryPosition === "left"
@@ -680,7 +702,7 @@ export default function ReplayPage() {
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-[10px] font-bold text-f1-muted uppercase">Telemetry</span>
                   {lapAnalysisOpen ? (
-                    <span className="text-[9px] text-f1-muted italic">Shown at bottom while Lap Analysis is open</span>
+                    <span className="text-[9px] text-f1-muted italic">{forceBottomTelemetry ? "Shown at bottom (all panels open)" : "Shown at bottom while Lap Analysis is open"}</span>
                   ) : (
                     <button
                       onClick={() => setTelemetryPosition(telemetryPosition === "left" ? "bottom" : "left")}
@@ -691,17 +713,21 @@ export default function ReplayPage() {
                     </button>
                   )}
                   <button
-                    onClick={() => setShowTelemetry(false)}
+                    onClick={() => closePanel(() => setShowTelemetry(false))}
                     className="px-1.5 py-0.5 text-[9px] font-bold text-f1-muted hover:text-white border border-f1-border rounded transition-colors ml-auto"
                   >
                     Hide
                   </button>
                 </div>
                 <div className="flex flex-col gap-1">
-                  {selectedDrivers.map((abbr) => {
-                    const drv = drivers.find((d) => d.abbr === abbr) || null;
-                    return <TelemetryChart key={abbr} visible driver={drv} year={year} isQualifying={isQualifying} useImperial={settings.useImperial} />;
-                  })}
+                  {selectedDrivers.length > 0 ? (
+                    selectedDrivers.map((abbr) => {
+                      const drv = drivers.find((d) => d.abbr === abbr) || null;
+                      return <TelemetryChart key={abbr} visible driver={drv} year={year} isQualifying={isQualifying} useImperial={settings.useImperial} />;
+                    })
+                  ) : (
+                    <p className="text-[10px] text-f1-muted py-2">Select drivers on the leaderboard to view telemetry</p>
+                  )}
                 </div>
               </div>
 
@@ -732,7 +758,7 @@ export default function ReplayPage() {
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[10px] font-bold text-f1-muted uppercase">Race Control</span>
                     <button
-                      onClick={() => setRcPinned(false)}
+                      onClick={() => closePanel(() => setRcPinned(false))}
                       className="px-1.5 py-0.5 text-[9px] font-bold text-f1-muted hover:text-white border border-f1-border rounded transition-colors"
                     >
                       Hide
@@ -800,7 +826,7 @@ export default function ReplayPage() {
             {/* Lap Analysis Panel - desktop only, left of leaderboard */}
             {!isMobile && isRace && lapAnalysisOpen && lapsResponse?.laps && (
               <div className="w-[280px] h-full border-r border-f1-border overflow-hidden flex-shrink-0">
-                <LapAnalysisPanel laps={lapsResponse.laps} drivers={drivers} currentLap={replay.frame?.lap || 0} onClose={() => setLapAnalysisOpen(false)} />
+                <LapAnalysisPanel laps={lapsResponse.laps} drivers={drivers} currentLap={replay.frame?.lap || 0} onClose={() => closePanel(() => setLapAnalysisOpen(false))} />
               </div>
             )}
 
