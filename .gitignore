@@ -23,3 +23,4 @@ backend/data/sessions/
 
 # Planning & internal docs
 /docs/
+.next/
