@@ -38,7 +38,7 @@ const LEADERBOARD_SETTINGS: { key: keyof ReplaySettings; label: string; raceOnly
   { key: "showTyreType", label: "Tyre type" },
   { key: "showTyreAge", label: "Tyre age" },
   { key: "showTyreHistory", label: "Tyre history", raceOnly: true },
-  { key: "showSectors", label: "Live sectors", qualiOnly: true },
+  { key: "showSectors", label: "Live sectors", nonRaceOnly: true },
   { key: "showPitPrediction", label: "Pit prediction", raceOnly: true },
   { key: "showPitConfidence", label: "Confidence", raceOnly: true, parent: "showPitPrediction" },
   { key: "showPitFreeAir", label: "Pit gaps", raceOnly: true, parent: "showPitPrediction" },

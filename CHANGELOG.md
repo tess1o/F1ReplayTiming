@@ -5,6 +5,7 @@ All notable changes to F1 Replay Timing will be documented in this file.
 ## 1.3.2
 
 ### Improvements
+- **Practice sector indicators** — live sector colours and track map sector overlay now available in practice sessions. Requires recompute
 - **Last lap time for all sessions** — now available in practice and qualifying. Requires recompute
 - **Last lap colour coding** — purple for fastest lap, green for personal best
 - **Processing feedback** — real-time status messages during on-demand processing

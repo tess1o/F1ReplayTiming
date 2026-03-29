@@ -364,8 +364,8 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
                 );
               })()}
 
-              {/* Live sector indicators - fixed width (qualifying only) */}
-              {isQualifying && settings.showSectors && (
+              {/* Live sector indicators - fixed width (qualifying and practice) */}
+              {!isRace && settings.showSectors && (
                 <span className="w-7 flex-shrink-0 flex items-center justify-center gap-[2px] mx-1">
                   {[1, 2, 3].map((sn) => {
                     const sec = drv.sectors?.find((s) => s.num === sn);

@@ -879,12 +879,12 @@ def _get_driver_positions_by_time_sync(
             driver_best_lap_events[drv] = events
             driver_lap_completions[drv] = completions
 
-    # For qualifying sessions: build sector completion events per driver
+    # For qualifying and practice sessions: build sector completion events per driver
     # Each entry: (session_time, sector_num, sector_time_seconds, lap_number, is_out_lap)
     # Also pre-compute which laps are out laps (lap 1 or first lap after pit exit)
     driver_sector_events: dict[str, list[tuple[float, int, float, int, bool]]] = {}
     driver_out_laps: dict[str, set[int]] = {}
-    if session_type in ("Q", "SQ"):
+    if session_type in ("Q", "SQ", "FP1", "FP2", "FP3"):
         for drv in drivers_list:
             drv_laps_df = laps.pick_drivers(drv).sort_values("LapNumber")
             sector_events = []
@@ -1474,8 +1474,8 @@ def _get_driver_positions_by_time_sync(
                     d["gap"] = "No time"
                     d["no_timing"] = False
 
-            # Add live sector indicators for qualifying
-            if session_type in ("Q", "SQ"):
+            # Add live sector indicators for qualifying and practice
+            if session_type in ("Q", "SQ", "FP1", "FP2", "FP3"):
                 # Track overall best and personal best sector times up to now
                 overall_best_sectors: dict[int, float] = {}  # sector_num -> best time
                 personal_best_sectors: dict[str, dict[int, float]] = {}  # driver -> sector_num -> best time

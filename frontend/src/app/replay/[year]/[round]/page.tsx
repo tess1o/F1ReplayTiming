@@ -249,6 +249,7 @@ export default function ReplayPage() {
   const isRace = sessionType === "R" || sessionType === "S";
   const isQualifying = sessionType === "Q" || sessionType === "SQ";
   const isPractice = sessionType === "FP1" || sessionType === "FP2" || sessionType === "FP3";
+  const hasSectors = isQualifying || isPractice;
 
   // For practice sessions, cap the total time at the official session duration (60 min)
   // so the "remaining" timer is accurate rather than including post-session telemetry
@@ -259,7 +260,7 @@ export default function ReplayPage() {
   const SECTOR_HEX: Record<string, string> = { purple: "#A855F7", green: "#22C55E", yellow: "#EAB308" };
   const DEFAULT_SECTOR = "#3A3A4A";
   const sectorOverlay: SectorOverlay | null = (() => {
-    if (!isQualifying || !showSectorOverlay || !trackData?.sector_boundaries) return null;
+    if (!hasSectors || !showSectorOverlay || !trackData?.sector_boundaries) return null;
     const target = sectorFocusDriver && selectedDrivers.includes(sectorFocusDriver)
       ? sectorFocusDriver
       : null;
@@ -285,7 +286,7 @@ export default function ReplayPage() {
     if (!isRace && settings.showBestLapTime) w += 60; // best lap time column
     if (settings.showLastLapTime) w += 60; // last lap time column
     if (settings.showGapToLeader) w += 56 + (!isRace ? 8 : 0); // extra margin between lap time and gap in practice/qualifying
-    if (isQualifying && settings.showSectors) w += 36; // sector indicators (28 + 8 margin)
+    if (hasSectors && settings.showSectors) w += 36; // sector indicators (28 + 8 margin)
     if (isRace && settings.showPitStops) w += 24;
     if (isRace && settings.showTyreHistory) w += 36;
     if (settings.showTyreType) w += 24;
@@ -535,7 +536,7 @@ export default function ReplayPage() {
               {/* Telemetry now in bottom drawer */}
 
               {/* Sector overlay toggle - desktop qualifying only */}
-              {!isMobile && isQualifying && trackData?.sector_boundaries && (
+              {!isMobile && hasSectors && trackData?.sector_boundaries && (
                 <div className="absolute bottom-2 right-36 z-20 flex items-center gap-1">
                   {showSectorOverlay && selectedDrivers.length === 0 && (
                     <span className="text-[10px] text-f1-muted mr-1">Select a driver to view sectors</span>
@@ -574,7 +575,7 @@ export default function ReplayPage() {
               )}
 
               {/* Sector overlay controls - mobile qualifying only */}
-              {isMobile && isQualifying && trackData?.sector_boundaries && (
+              {isMobile && hasSectors && trackData?.sector_boundaries && (
                 <div className="absolute bottom-2 left-2 right-2 z-20 flex items-center gap-1">
                   {showSectorOverlay && selectedDrivers.length > 0 && (
                     <div className="flex items-center gap-1 overflow-x-auto">
