@@ -9,6 +9,7 @@ export interface LapEntry {
   driver: string;
   lap_number: number;
   lap_time: string | null;
+  time: number | null; // session-elapsed seconds when lap was completed
   compound: string | null;
   pit_in: boolean;
   pit_out: boolean;
@@ -24,7 +25,7 @@ interface Props {
   isQualifying?: boolean;
   compact?: boolean;
   onScaleChange?: (scale: number) => void;
-  lapData?: Map<string, Map<number, string>>;
+  lapData?: Map<string, Map<number, { time: string; completedAt: number | null }>>;
   currentLap?: number;
   mobileTeamAbbrHidden?: boolean;
 }
@@ -287,18 +288,32 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
                 )
               )}
 
-              {/* Last lap time (race only) */}
-              {isRace && settings.showLastLapTime && (() => {
+              {/* Last lap time */}
+              {settings.showLastLapTime && (() => {
                 const driverLaps = lapData?.get(drv.abbr);
-                if (!driverLaps || !currentLap || currentLap < 2) return (
+                if (!driverLaps) return (
                   <span className="w-[50px] sm:w-[60px] flex-shrink-0" />
                 );
+
+                // Find the driver's most recent completed lap up to the current replay time
                 let lastLapTime: string | null = null;
                 let lastLapNum = 0;
-                for (let l = currentLap; l >= 1; l--) {
-                  const t = driverLaps.get(l);
-                  if (t) { lastLapTime = t; lastLapNum = l; break; }
+                if (isRace) {
+                  // Races: use global currentLap
+                  for (let l = (currentLap || 0); l >= 1; l--) {
+                    const entry = driverLaps.get(l);
+                    if (entry) { lastLapTime = entry.time; lastLapNum = l; break; }
+                  }
+                } else {
+                  // Practice/qualifying: use timestamp to find laps completed before current time
+                  for (const [lapNum, entry] of driverLaps) {
+                    if (entry.completedAt !== null && entry.completedAt <= currentTime && lapNum > lastLapNum) {
+                      lastLapTime = entry.time;
+                      lastLapNum = lapNum;
+                    }
+                  }
                 }
+
                 if (!lastLapTime || lastLapNum < 2 || drv.retired) return (
                   <span className="w-[50px] sm:w-[60px] flex-shrink-0 text-[11px] sm:text-xs text-right tabular-nums text-f1-muted" title="Last lap time">
                     {drv.retired ? "" : (lastLapTime || "")}
@@ -312,16 +327,33 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
                 };
                 const lastSecs = toSecs(lastLapTime);
 
-                // Check personal best (this driver's laps 2+ up to current)
+                // Check personal best (this driver's completed laps up to now)
                 let personalBest = Infinity;
-                for (let l = 2; l <= currentLap; l++) {
-                  const t = driverLaps.get(l);
-                  if (t) { const s = toSecs(t); if (s < personalBest) personalBest = s; }
+                for (const [lapNum, entry] of driverLaps) {
+                  if (lapNum < 2) continue;
+                  if (!isRace && entry.completedAt !== null && entry.completedAt > currentTime) continue;
+                  if (isRace && lapNum > (currentLap || 0)) continue;
+                  const s = toSecs(entry.time);
+                  if (s < personalBest) personalBest = s;
                 }
                 const isPersonalBest = lastSecs <= personalBest + 0.0005;
 
-                // Purple: backend says this driver holds fastest lap AND their last lap equals their personal best
-                const isFastest = drv.has_fastest_lap && isPersonalBest;
+                // Purple: for races, use backend flag. For practice/qualifying, compute from all drivers' laps.
+                let isFastest = false;
+                if (isRace) {
+                  isFastest = drv.has_fastest_lap && isPersonalBest;
+                } else if (isPersonalBest && lapData) {
+                  let overallFastest = Infinity;
+                  for (const [, laps] of lapData) {
+                    for (const [lapNum, entry] of laps) {
+                      if (lapNum < 2) continue;
+                      if (entry.completedAt !== null && entry.completedAt > currentTime) continue;
+                      const s = toSecs(entry.time);
+                      if (s < overallFastest) overallFastest = s;
+                    }
+                  }
+                  isFastest = lastSecs <= overallFastest + 0.0005;
+                }
 
                 const color = isFastest ? "text-purple-400" : isPersonalBest ? "text-green-400" : "text-f1-muted";
 

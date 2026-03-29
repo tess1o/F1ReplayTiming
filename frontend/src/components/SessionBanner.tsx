@@ -31,7 +31,7 @@ const LEADERBOARD_SETTINGS: { key: keyof ReplaySettings; label: string; raceOnly
   { key: "showTeamAbbr", label: "Team" },
   { key: "showGridChange", label: "Grid position change", raceOnly: true },
   { key: "showBestLapTime", label: "Best time", nonRaceOnly: true },
-  { key: "showLastLapTime", label: "Last lap time", raceOnly: true },
+  { key: "showLastLapTime", label: "Last lap time" },
   { key: "showGapToLeader", label: "Gap" },
   { key: "highlightClose", label: "Highlight under 1s", raceOnly: true },
   { key: "showPitStops", label: "Pit stops", raceOnly: true },

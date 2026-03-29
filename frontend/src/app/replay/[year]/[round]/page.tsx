@@ -146,16 +146,15 @@ export default function ReplayPage() {
   );
 
   // Fetch lap data for last lap time column (race/sprint only)
+  // Fetch lap data for last lap time column (all session types)
   const { data: lapsResponse } = useApi<{ laps: LapEntry[] }>(
-    sessionType === "R" || sessionType === "S"
-      ? `/api/sessions/${year}/${round}/laps?type=${sessionType}`
-      : null,
+    `/api/sessions/${year}/${round}/laps?type=${sessionType}`,
   );
 
   // Build lookup: driver -> lap_number -> lap_time
   const lapData = useMemo(() => {
     if (!lapsResponse?.laps) return undefined;
-    const map = new Map<string, Map<number, string>>();
+    const map = new Map<string, Map<number, { time: string; completedAt: number | null }>>();
     for (const lap of lapsResponse.laps) {
       if (!lap.lap_time) continue;
       let driverMap = map.get(lap.driver);
@@ -163,7 +162,7 @@ export default function ReplayPage() {
         driverMap = new Map();
         map.set(lap.driver, driverMap);
       }
-      driverMap.set(lap.lap_number, lap.lap_time);
+      driverMap.set(lap.lap_number, { time: lap.lap_time, completedAt: lap.time ?? null });
     }
     return map;
   }, [lapsResponse]);
@@ -207,10 +206,12 @@ export default function ReplayPage() {
     return (
       <div className="min-h-screen bg-f1-dark flex items-center justify-center">
         <div className="text-center">
-          <div className="inline-block w-12 h-12 border-3 border-f1-muted border-t-f1-red rounded-full animate-spin mb-6" />
-          <p className="text-f1-muted text-lg">Loading session data...</p>
+          <div className="inline-block w-12 h-12 border-[3px] border-f1-muted border-t-f1-red rounded-full animate-spin mb-6" />
+          <p className="text-white text-lg font-bold">
+            {replay.statusMessage || "Loading session data..."}
+          </p>
           <p className="text-f1-muted text-sm mt-2">
-            First load may take up to 60 seconds while data is fetched
+            {replay.statusMessage ? "This may take a few minutes for first-time sessions" : "First load may take up to 60 seconds while data is fetched"}
           </p>
         </div>
       </div>
@@ -247,6 +248,12 @@ export default function ReplayPage() {
   const weather = replay.frame?.weather;
   const isRace = sessionType === "R" || sessionType === "S";
   const isQualifying = sessionType === "Q" || sessionType === "SQ";
+  const isPractice = sessionType === "FP1" || sessionType === "FP2" || sessionType === "FP3";
+
+  // For practice sessions, cap the total time at the official session duration (60 min)
+  // so the "remaining" timer is accurate rather than including post-session telemetry
+  const PRACTICE_DURATION = 3600; // 60 minutes
+  const effectiveTotalTime = isPractice ? Math.min(replay.totalTime, PRACTICE_DURATION) : replay.totalTime;
 
   // Compute sector overlay for track map
   const SECTOR_HEX: Record<string, string> = { purple: "#A855F7", green: "#22C55E", yellow: "#EAB308" };
@@ -276,7 +283,7 @@ export default function ReplayPage() {
     if (!isRace) w += 18; // pit indicator (P box + margin)
     if (isRace && settings.showGridChange) w += 24;
     if (!isRace && settings.showBestLapTime) w += 60; // best lap time column
-    if (isRace && settings.showLastLapTime) w += 60; // last lap time column
+    if (settings.showLastLapTime) w += 60; // last lap time column
     if (settings.showGapToLeader) w += 56 + (!isRace ? 8 : 0); // extra margin between lap time and gap in practice/qualifying
     if (isQualifying && settings.showSectors) w += 36; // sector indicators (28 + 8 margin)
     if (isRace && settings.showPitStops) w += 24;
@@ -859,7 +866,7 @@ export default function ReplayPage() {
         playing={replay.playing}
         speed={replay.speed}
         currentTime={replay.frame?.timestamp || 0}
-        totalTime={replay.totalTime}
+        totalTime={effectiveTotalTime}
         currentLap={replay.frame?.lap || 0}
         totalLaps={replay.totalLaps}
         finished={replay.finished}
@@ -1045,7 +1052,7 @@ export default function ReplayPage() {
                 playing={replay.playing}
                 speed={replay.speed}
                 currentTime={replay.frame?.timestamp || 0}
-                totalTime={replay.totalTime}
+                totalTime={effectiveTotalTime}
                 currentLap={replay.frame?.lap || 0}
                 totalLaps={replay.totalLaps}
                 finished={replay.finished}

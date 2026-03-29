@@ -123,7 +123,7 @@ def process_session_sync(
     except Exception as e:
         logger.warning(f"[{prefix}] Telemetry upload issue: {e}")
 
-    status("Done")
+    status("Processing complete")
     logger.info(f"[{prefix}] Done")
     return True
 
