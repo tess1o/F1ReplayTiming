@@ -93,6 +93,7 @@ interface ReplayState {
   qualiPhases: QualiPhaseInfo[];
   finished: boolean;
   error: string | null;
+  statusMessage: string | null;
 }
 
 export function useReplaySocket(year: number, round: number, sessionType: string = "R") {
@@ -109,6 +110,7 @@ export function useReplaySocket(year: number, round: number, sessionType: string
     qualiPhases: [],
     finished: false,
     error: null,
+    statusMessage: null,
   });
 
   useEffect(() => {
@@ -125,13 +127,14 @@ export function useReplaySocket(year: number, round: number, sessionType: string
 
       switch (msg.type) {
         case "status":
-          setState((s) => ({ ...s, loading: true }));
+          setState((s) => ({ ...s, loading: true, statusMessage: msg.message || null }));
           break;
         case "ready":
           setState((s) => ({
             ...s,
             ready: true,
             loading: false,
+            statusMessage: null,
             totalTime: msg.total_time,
             totalLaps: msg.total_laps,
             qualiPhases: msg.quali_phases || [],

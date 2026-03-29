@@ -9,6 +9,7 @@ export interface LapEntry {
   driver: string;
   lap_number: number;
   lap_time: string | null;
+  time: number | null; // session-elapsed seconds when lap was completed
   compound: string | null;
   pit_in: boolean;
   pit_out: boolean;
@@ -24,7 +25,7 @@ interface Props {
   isQualifying?: boolean;
   compact?: boolean;
   onScaleChange?: (scale: number) => void;
-  lapData?: Map<string, Map<number, string>>;
+  lapData?: Map<string, Map<number, { time: string; completedAt: number | null }>>;
   currentLap?: number;
   mobileTeamAbbrHidden?: boolean;
 }
@@ -157,17 +158,17 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
             <button
               key={drv.abbr}
               onClick={() => onDriverClick(drv.abbr)}
-              className={`w-full flex items-center px-2 py-1 hover:bg-white/5 transition-colors text-left ${
+              className={`w-full flex items-center px-1 sm:px-2 py-1 hover:bg-white/5 transition-colors text-left ${
                 isHighlighted ? "bg-white/10" : ""
               } ${drv.no_timing ? "opacity-40" : ""}`}
             >
-              {/* Position - 24px */}
+              {/* Position - 20px mobile, 24px desktop */}
               {isLeader ? (
-                <span className="w-6 h-6 flex items-center justify-center rounded bg-f1-red text-white text-sm font-extrabold flex-shrink-0">
+                <span className="w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded bg-f1-red text-white text-[14px] sm:text-sm font-extrabold flex-shrink-0">
                   {drv.position}
                 </span>
               ) : (
-                <span className="w-6 text-sm font-extrabold text-white text-right flex-shrink-0">
+                <span className="w-5 sm:w-6 text-[14px] sm:text-sm font-extrabold text-white text-right flex-shrink-0">
                   {drv.position ?? "-"}
                 </span>
               )}
@@ -281,32 +282,90 @@ export default function Leaderboard({ drivers, highlightedDrivers, onDriverClick
                     </span>
                   )
                 ) : (
-                  <span className={`w-14 flex-shrink-0 text-xs font-bold text-left tabular-nums text-f1-muted sm:ml-0 ml-3`} title="Gap to leader">
+                  <span className={`w-14 flex-shrink-0 text-xs font-bold text-left tabular-nums text-f1-muted ml-3 sm:ml-2`} title="Gap to leader">
                     {displayGap}
                   </span>
                 )
               )}
 
-              {/* Last lap time (race only) */}
-              {isRace && settings.showLastLapTime && (() => {
+              {/* Last lap time */}
+              {settings.showLastLapTime && (() => {
                 const driverLaps = lapData?.get(drv.abbr);
-                if (!driverLaps || !currentLap || currentLap < 2) return (
-                  <span className="w-[52px] sm:w-[60px] flex-shrink-0" />
+                if (!driverLaps) return (
+                  <span className="w-[50px] sm:w-[60px] flex-shrink-0" />
                 );
+
+                // Find the driver's most recent completed lap up to the current replay time
                 let lastLapTime: string | null = null;
-                for (let l = currentLap; l >= 1; l--) {
-                  const t = driverLaps.get(l);
-                  if (t) { lastLapTime = t; break; }
+                let lastLapNum = 0;
+                if (isRace) {
+                  // Races: use global currentLap
+                  for (let l = (currentLap || 0); l >= 1; l--) {
+                    const entry = driverLaps.get(l);
+                    if (entry) { lastLapTime = entry.time; lastLapNum = l; break; }
+                  }
+                } else {
+                  // Practice/qualifying: use timestamp to find laps completed before current time
+                  for (const [lapNum, entry] of driverLaps) {
+                    if (entry.completedAt !== null && entry.completedAt <= currentTime && lapNum > lastLapNum) {
+                      lastLapTime = entry.time;
+                      lastLapNum = lapNum;
+                    }
+                  }
                 }
-                return (
-                  <span className="w-[52px] sm:w-[60px] flex-shrink-0 text-[11px] sm:text-xs text-right tabular-nums text-f1-muted" title="Last lap time">
+
+                if (!lastLapTime || lastLapNum < 2 || drv.retired) return (
+                  <span className="w-[50px] sm:w-[60px] flex-shrink-0 text-[11px] sm:text-xs text-right tabular-nums text-f1-muted" title="Last lap time">
                     {drv.retired ? "" : (lastLapTime || "")}
+                  </span>
+                );
+
+                // Parse time string to seconds for comparison
+                const toSecs = (t: string): number => {
+                  const p = t.split(":");
+                  return p.length === 2 ? parseInt(p[0]) * 60 + parseFloat(p[1]) : parseFloat(p[0]) || Infinity;
+                };
+                const lastSecs = toSecs(lastLapTime);
+
+                // Check personal best (this driver's completed laps up to now)
+                let personalBest = Infinity;
+                for (const [lapNum, entry] of driverLaps) {
+                  if (lapNum < 2) continue;
+                  if (!isRace && entry.completedAt !== null && entry.completedAt > currentTime) continue;
+                  if (isRace && lapNum > (currentLap || 0)) continue;
+                  const s = toSecs(entry.time);
+                  if (s < personalBest) personalBest = s;
+                }
+                const isPersonalBest = lastSecs <= personalBest + 0.0005;
+
+                // Purple: for races, use backend flag. For practice/qualifying, compute from all drivers' laps.
+                let isFastest = false;
+                if (isRace) {
+                  isFastest = drv.has_fastest_lap && isPersonalBest;
+                } else if (isPersonalBest && lapData) {
+                  let overallFastest = Infinity;
+                  for (const [, laps] of lapData) {
+                    for (const [lapNum, entry] of laps) {
+                      if (lapNum < 2) continue;
+                      if (entry.completedAt !== null && entry.completedAt > currentTime) continue;
+                      const s = toSecs(entry.time);
+                      if (s < overallFastest) overallFastest = s;
+                    }
+                  }
+                  isFastest = lastSecs <= overallFastest + 0.0005;
+                }
+
+                const color = isFastest ? "text-purple-400" : isPersonalBest ? "text-green-400" : "text-f1-muted";
+
+                return (
+                  <span className={`w-[50px] sm:w-[60px] flex-shrink-0 text-[11px] sm:text-xs text-right tabular-nums ${color}`} title="Last lap time">
+                    {lastLapTime}
                   </span>
                 );
               })()}
 
-              {/* Live sector indicators - fixed width (qualifying only) */}
-              {isQualifying && settings.showSectors && (
+              {/* Live sector indicators - fixed width (qualifying and practice) */}
+              {!isRace && settings.showSectors && (
                 <span className="w-7 flex-shrink-0 flex items-center justify-center gap-[2px] mx-1">
                   {[1, 2, 3].map((sn) => {
                     const sec = drv.sectors?.find((s) => s.num === sn);

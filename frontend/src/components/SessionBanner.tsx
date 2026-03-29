@@ -31,14 +31,14 @@ const LEADERBOARD_SETTINGS: { key: keyof ReplaySettings; label: string; raceOnly
   { key: "showTeamAbbr", label: "Team" },
   { key: "showGridChange", label: "Grid position change", raceOnly: true },
   { key: "showBestLapTime", label: "Best time", nonRaceOnly: true },
-  { key: "showLastLapTime", label: "Last lap time", raceOnly: true },
+  { key: "showLastLapTime", label: "Last lap time" },
   { key: "showGapToLeader", label: "Gap" },
   { key: "highlightClose", label: "Highlight under 1s", raceOnly: true },
   { key: "showPitStops", label: "Pit stops", raceOnly: true },
   { key: "showTyreType", label: "Tyre type" },
   { key: "showTyreAge", label: "Tyre age" },
   { key: "showTyreHistory", label: "Tyre history", raceOnly: true },
-  { key: "showSectors", label: "Live sectors", qualiOnly: true },
+  { key: "showSectors", label: "Live sectors", nonRaceOnly: true },
   { key: "showPitPrediction", label: "Pit prediction", raceOnly: true },
   { key: "showPitConfidence", label: "Confidence", raceOnly: true, parent: "showPitPrediction" },
   { key: "showPitFreeAir", label: "Pit gaps", raceOnly: true, parent: "showPitPrediction" },
@@ -57,9 +57,11 @@ const TRACK_MAP_SETTINGS: { key: keyof ReplaySettings; label: string }[] = [
   { key: "showCorners", label: "Corner numbers" },
 ];
 
-const OTHER_SETTINGS: { key: keyof ReplaySettings; label: string }[] = [
-  { key: "showSessionTime", label: "Total session time" },
+const OTHER_SETTINGS: { key: keyof ReplaySettings; label: string; hint?: string }[] = [
+  { key: "showAllPanels", label: "Open all data panels" },
+  { key: "showSessionTime", label: "Show total session time", hint: "May indicate red flags and spoilers" },
   { key: "useImperial", label: "Imperial units (°F, mph)" },
+  { key: "highContrast", label: "High contrast text" },
 ];
 
 export default function SessionBanner({
@@ -207,7 +209,7 @@ export default function SessionBanner({
               <div className="fixed inset-0 bg-black/50 z-40" onClick={() => setSettingsOpen(false)} />
 
               {/* Settings modal */}
-              <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 h-[450px] sm:inset-auto sm:top-1/2 sm:left-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 z-50 sm:w-[520px] sm:h-[420px] bg-[#1A1A26] border border-f1-border rounded-xl shadow-2xl overflow-hidden flex flex-col">
+              <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 h-[450px] sm:inset-auto sm:top-1/2 sm:left-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 z-50 sm:w-[520px] sm:h-[450px] bg-[#1A1A26] border border-f1-border rounded-xl shadow-2xl overflow-hidden flex flex-col">
                 {/* Modal header */}
                 <div className="flex items-center justify-between px-4 py-3 border-b border-f1-border">
                   <span className="text-sm font-bold text-white">Settings</span>
@@ -263,7 +265,7 @@ export default function SessionBanner({
                             {label}
                             {badge && <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-f1-red/20 text-f1-red leading-none">{badge}</span>}
                             {key === "showTeamAbbr" && mobileTeamAbbrHidden && (
-                              <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-yellow-500/20 text-yellow-500 leading-none">Auto-hidden on mobile</span>
+                              <span className="px-1 py-0.5 text-[7px] font-bold uppercase rounded bg-yellow-500/20 text-yellow-500 leading-none">Auto-hidden</span>
                             )}
                           </span>
                           <div className={`relative ${parent ? "w-7 h-4" : "w-9 h-5"} rounded-full transition-colors ${settings[key] ? "bg-f1-red" : "bg-f1-border"}`}>
@@ -327,13 +329,16 @@ export default function SessionBanner({
                   </>)}
 
                   {settingsTab === "Other" && (<>
-                    {OTHER_SETTINGS.map(({ key, label }) => (
+                    {OTHER_SETTINGS.map(({ key, label, hint }) => (
                       <button
                         key={key}
                         onClick={() => onSettingChange?.(key, !settings[key])}
                         className="w-full flex items-center justify-between px-2 sm:px-6 py-1.5 hover:bg-white/5 transition-colors"
                       >
-                        <span className="text-sm text-white">{label}</span>
+                        <span className="text-left">
+                          <span className="text-sm text-white block">{label}</span>
+                          {hint && <span className="text-[9px] text-f1-muted block">{hint}</span>}
+                        </span>
                         <div className={`relative w-9 h-5 rounded-full transition-colors ${settings[key] ? "bg-f1-red" : "bg-f1-border"}`}>
                           <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${settings[key] ? "translate-x-[18px]" : "translate-x-0.5"}`} />
                         </div>

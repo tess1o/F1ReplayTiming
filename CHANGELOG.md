@@ -1,6 +1,27 @@
 # Changelog
 
-All notable changes to F1 Timing Replay will be documented in this file.
+All notable changes to F1 Replay Timing will be documented in this file.
+
+## 1.3.2
+
+### Improvements
+- **Practice sector indicators** — live sector colours and track map sector overlay now available in practice sessions. Requires recompute
+- **Last lap time for all sessions** — now available in practice and qualifying. Requires recompute
+- **Last lap colour coding** — purple for fastest lap, green for personal best
+- **Processing feedback** — real-time status messages during on-demand processing
+- **Broadcast delay modal** — redesigned with quick adjust buttons and exact entry
+- **Open all data panels** — toggle in Settings > Other to open telemetry, race control, and lap analysis (race only) in a single click. Closes automatically when any panel is hidden
+- **Persistent panel layout** — panel states (telemetry, race control, lap analysis, sectors) are remembered per session type (race, qualifying, practice) across page loads
+- **High contrast text** — toggle in Settings > Other for white text on muted elements
+
+### Fixes
+- **Practice session precompute** — fixed timestamp alignment for practice sessions causing leaderboard to show future data. Requires recompute
+- **Practice session time** — countdown aligned to 60-minute session duration, not overall replay length
+- **Mobile qualifying time** — now shows remaining time counting down, matching desktop
+- **PiP leaderboard scroll** — leaderboard no longer cut off by playback controls
+- **Minor UI layout fixes** — spacing and alignment across mobile, tablet, and desktop
+
+---
 
 ## 1.3.1
 
