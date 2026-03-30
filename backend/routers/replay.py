@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import re
+import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from services.storage import get_json
@@ -317,7 +318,18 @@ async def replay_websocket(
         playing = False
         speed = 1.0
         frame_index = 0
-        base_interval = 0.5
+
+        # Wall-clock anchor used to compute per-frame sleep durations.
+        # Anchored at play/seek/speed-change so accumulated async overhead
+        # never causes timing drift over long sessions.
+        play_start_wall: float = 0.0
+        play_start_session: float = 0.0
+
+        def reset_anchor():
+            nonlocal play_start_wall, play_start_session
+            if frame_index < len(frames):
+                play_start_wall = time.monotonic()
+                play_start_session = frames[frame_index]["timestamp"]
 
         async def send_seek_frame(target_time: float):
             nonlocal frame_index
@@ -333,18 +345,21 @@ async def replay_websocket(
 
             if cmd == "play":
                 playing = True
+                reset_anchor()
             elif cmd == "pause":
                 playing = False
             elif cmd.startswith("speed:"):
                 try:
                     speed = float(cmd.split(":")[1])
                     speed = max(0.25, min(50.0, speed))
+                    reset_anchor()  # re-anchor at new speed
                 except ValueError:
                     pass
             elif cmd.startswith("seek:"):
                 try:
                     target_time = float(cmd.split(":")[1])
                     await send_seek_frame(target_time)
+                    reset_anchor()
                 except ValueError:
                     pass
             elif cmd.startswith("seeklap:"):
@@ -356,12 +371,14 @@ async def replay_websocket(
                             break
                     if frame_index < len(frames):
                         await websocket.send_json({"type": "frame", **prepare_frame(frames[frame_index])})
+                    reset_anchor()
                 except ValueError:
                     pass
             elif cmd == "reset":
                 frame_index = 0
                 playing = False
                 await websocket.send_json({"type": "frame", **prepare_frame(frames[0])})
+                reset_anchor()
 
         async def check_command(timeout: float) -> bool:
             try:
@@ -381,11 +398,17 @@ async def replay_websocket(
                     await websocket.send_json({"type": "finished"})
                     continue
 
-                remaining = base_interval / speed
-                while remaining > 0 and playing:
-                    chunk = min(remaining, 0.05)
+                # Sleep until the next frame is due per wall clock.
+                # sleep_remaining is recomputed from the actual clock each iteration
+                # so any processing overhead is automatically absorbed.
+                next_session_time = frames[frame_index]["timestamp"]
+                target_wall = play_start_wall + (next_session_time - play_start_session) / speed
+                sleep_remaining = target_wall - time.monotonic()
+
+                while sleep_remaining > 0 and playing:
+                    chunk = min(sleep_remaining, 0.05)
                     await check_command(chunk)
-                    remaining -= chunk
+                    sleep_remaining = target_wall - time.monotonic()
             else:
                 await check_command(1.0)
 
