@@ -43,6 +43,8 @@ type app struct {
 	dataDir         string
 	workerPath      string
 	pythonBin       string
+	processorMode   string
+	processor       SessionProcessor
 	replayCache     *replayCache
 	downloads       *downloadManager
 	allowedOrigins  map[string]struct{}
@@ -138,6 +140,7 @@ func main() {
 		dataDir:        dataDir,
 		workerPath:     workerPath,
 		pythonBin:      pythonBin,
+		processorMode:  strings.ToLower(defaultString(strings.TrimSpace(os.Getenv("PROCESSOR_MODE")), "go")),
 		replayCache:    newReplayCache(maxCacheMB*1024*1024, cacheTTL),
 		allowedOrigins: buildAllowedOrigins(),
 		authEnabled:    isTrue(os.Getenv("AUTH_ENABLED")),
@@ -145,6 +148,7 @@ func main() {
 		sessionLocks:   make(map[string]*sync.Mutex),
 		scheduleLocks:  make(map[int]*sync.Mutex),
 	}
+	app.processor = NewSessionProcessor(app.processorMode, dataDir, workerPath, pythonBin)
 	app.downloads = newDownloadManager(app, dataDir)
 	app.downloads.start()
 
@@ -171,7 +175,7 @@ func main() {
 	mux.HandleFunc("GET /ws/live/{year}/{round}", app.handleLiveWebSocket)
 
 	handler := app.withMiddleware(mux)
-	log.Printf("Go backend listening on :%s (data_dir=%s)", port, dataDir)
+	log.Printf("Go backend listening on :%s (data_dir=%s processor_mode=%s)", port, dataDir, app.processorMode)
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}
@@ -812,6 +816,10 @@ func (a *app) handleLiveWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if a.processor != nil && strings.EqualFold(a.processorMode, "go") {
+		http.Error(w, "Live stream is not available in Phase 1 Go processor mode", http.StatusNotImplemented)
+		return
+	}
 	year, err1 := strconv.Atoi(r.PathValue("year"))
 	round, err2 := strconv.Atoi(r.PathValue("round"))
 	if err1 != nil || err2 != nil {
@@ -913,6 +921,9 @@ func (a *app) ensureSchedule(year int) error {
 		return nil
 	}
 
+	if a.processor != nil {
+		return a.processor.EnsureSchedule(context.Background(), year)
+	}
 	return a.runWorker("ensure-schedule", "--year", strconv.Itoa(year))
 }
 
@@ -938,6 +949,9 @@ func (a *app) ensureSessionData(year, round int, sessionType string, onStatus fu
 		return nil
 	}
 
+	if a.processor != nil {
+		return a.processor.ProcessSession(context.Background(), year, round, sessionType, onStatus)
+	}
 	return a.runWorkerStreaming([]string{"process-session", "--year", strconv.Itoa(year), "--round", strconv.Itoa(round), "--type", sessionType}, onStatus)
 }
 

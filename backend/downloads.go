@@ -653,6 +653,9 @@ func (m *downloadManager) failedKeysByYear(year int) []sessionKey {
 }
 
 func (a *app) runProcessSessionWorker(ctx context.Context, year, round int, sessionType string, onStatus func(string)) error {
+	if a.processor != nil {
+		return a.processor.ProcessSession(ctx, year, round, sessionType, onStatus)
+	}
 	args := []string{
 		a.workerPath,
 		"process-session",
