@@ -19,19 +19,27 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"f1replaytiming/backend/storage"
 )
 
 const defaultF1StaticBase = "https://livetiming.formula1.com/static"
 
 type GoSessionProcessor struct {
-	dataDir      string
-	baseURL      string
-	httpClient   *http.Client
-	sampleEvery  float64
-	fetchWorkers int
-	parseWorkers int
-	circuitMeta  *circuitMetadataIndex
-	metaLoadErr  error
+	dataDir               string
+	store                 *storage.Store
+	baseURL               string
+	httpClient            *http.Client
+	sampleEvery           float64
+	fetchWorkers          int
+	parseWorkers          int
+	replayChunkFrames     int
+	telemetryChunkSamples int
+	rawMinDelta           float64
+	replayChunkCodec      string
+	telemetryChunkCodec   string
+	circuitMeta           *circuitMetadataIndex
+	metaLoadErr           error
 }
 
 type seasonIndex struct {
@@ -149,7 +157,7 @@ type replayWriter struct {
 	totalLaps  int
 }
 
-func NewGoSessionProcessor(dataDir string) *GoSessionProcessor {
+func NewGoSessionProcessor(dataDir string, store *storage.Store, replayChunkFrames, telemetryChunkSamples int) *GoSessionProcessor {
 	baseURL := strings.TrimSpace(os.Getenv("F1_STATIC_BASE_URL"))
 	if baseURL == "" {
 		baseURL = defaultF1StaticBase
@@ -176,22 +184,50 @@ func NewGoSessionProcessor(dataDir string) *GoSessionProcessor {
 		}
 	}
 	meta, metaErr := loadCircuitMetadata(embeddedCircuitMetadata)
+	if replayChunkFrames <= 0 {
+		replayChunkFrames = 256
+	}
+	if telemetryChunkSamples <= 0 {
+		telemetryChunkSamples = 512
+	}
+	rawMinDelta := 0.10
+	if raw := strings.TrimSpace(os.Getenv("PROCESS_RAW_MIN_DT_SECONDS")); raw != "" {
+		if v, err := strconv.ParseFloat(raw, 64); err == nil && v >= 0 {
+			rawMinDelta = v
+		}
+	}
+	chunkCodec := strings.ToLower(strings.TrimSpace(os.Getenv("PROCESS_CHUNK_CODEC")))
+	if chunkCodec == "" {
+		chunkCodec = storage.CodecProtobuf
+	}
+	if chunkCodec != storage.CodecProtobuf && chunkCodec != storage.CodecProtobufZstd {
+		chunkCodec = storage.CodecProtobuf
+	}
 
 	return &GoSessionProcessor{
 		dataDir: dataDir,
+		store:   store,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},
-		sampleEvery:  sampleEvery,
-		fetchWorkers: fetchWorkers,
-		parseWorkers: parseWorkers,
-		circuitMeta:  meta,
-		metaLoadErr:  metaErr,
+		sampleEvery:           sampleEvery,
+		fetchWorkers:          fetchWorkers,
+		parseWorkers:          parseWorkers,
+		replayChunkFrames:     replayChunkFrames,
+		telemetryChunkSamples: telemetryChunkSamples,
+		rawMinDelta:           rawMinDelta,
+		replayChunkCodec:      chunkCodec,
+		telemetryChunkCodec:   chunkCodec,
+		circuitMeta:           meta,
+		metaLoadErr:           metaErr,
 	}
 }
 
 func (p *GoSessionProcessor) EnsureSchedule(ctx context.Context, year int) error {
+	if p.store == nil {
+		return errors.New("sqlite store is not configured")
+	}
 	idx, err := p.fetchSeasonIndex(ctx, year)
 	if err != nil {
 		return err
@@ -205,10 +241,16 @@ func (p *GoSessionProcessor) EnsureSchedule(ctx context.Context, year int) error
 		"events": events,
 	}
 	rel := filepath.Join("seasons", strconv.Itoa(year), "schedule.json")
-	return p.writeJSONAtomic(rel, out)
+	if err := p.writeJSONAtomic(rel, out); err != nil {
+		return err
+	}
+	return p.store.UpsertSchedule(ctx, year, out)
 }
 
 func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int, sessionType string, onStatus func(string)) error {
+	if p.store == nil {
+		return errors.New("sqlite store is not configured")
+	}
 	status := func(msg string) {
 		if onStatus != nil {
 			onStatus(msg)
@@ -276,6 +318,10 @@ func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int
 	if err := p.writeJSONAtomic(filepath.Join(baseOut, "info.json"), info); err != nil {
 		return err
 	}
+	sessionID, err := p.store.UpsertSessionInfo(ctx, year, round, sessionType, info)
+	if err != nil {
+		return fmt.Errorf("upsert session info: %w", err)
+	}
 
 	status("Parsing timing stream...")
 	timingTimeline, laps, latestState, err := p.parseTimingDataStream(ctx, sessionPath, sidx.Feeds["TimingData"], driverByNum, timingAppRaw)
@@ -289,6 +335,12 @@ func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int
 	if err := p.writeJSONAtomic(filepath.Join(baseOut, "laps.json"), laps); err != nil {
 		return err
 	}
+	if err := p.store.ReplaceResults(ctx, sessionID, results); err != nil {
+		return fmt.Errorf("store results: %w", err)
+	}
+	if err := p.store.ReplaceLaps(ctx, sessionID, laps); err != nil {
+		return fmt.Errorf("store laps: %w", err)
+	}
 
 	status("Parsing position stream...")
 	posTimeline, err := p.parsePositionStream(ctx, sessionPath, sidx.Feeds["Position.z"])
@@ -301,6 +353,9 @@ func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int
 	trackJSON := buildTrackJSON(posTimeline, timingTimeline, circuitMeta, circuitName)
 	if err := p.writeJSONAtomic(filepath.Join(baseOut, "track.json"), trackJSON); err != nil {
 		return err
+	}
+	if err := p.store.ReplaceTrack(ctx, sessionID, trackJSON); err != nil {
+		return fmt.Errorf("store track: %w", err)
 	}
 
 	status("Parsing telemetry stream...")
@@ -317,18 +372,19 @@ func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int
 	rcPoints := parseRaceControlMessages(raceControlRaw)
 
 	status("Writing replay frames (streaming)...")
-	replayIdx, err := p.writeReplayFromTimelines(filepath.Join(baseOut, "replay.json"), drivers, timingTimeline, posTimeline, carTimeline, trackStatuses, weatherPoints, rcPoints, sessionType, window, stintByAbbr)
+	replayIdx, err := p.writeReplayFromTimelines(ctx, sessionID, drivers, timingTimeline, posTimeline, carTimeline, trackStatuses, weatherPoints, rcPoints, sessionType, window, stintByAbbr)
 	if err != nil {
 		return err
 	}
 	if replayIdx != nil {
-		if err := p.writeJSONAtomic(filepath.Join(baseOut, "replay.index.json"), replayIdx); err != nil {
-			return err
-		}
+		_ = p.writeJSONAtomic(filepath.Join(baseOut, "replay.index.json"), replayIdx)
 	}
 
 	status("Writing telemetry by driver...")
-	if err := p.writeTelemetryFiles(baseOut, drivers, carTimeline, posTimeline, timingTimeline); err != nil {
+	if err := p.writeTelemetryFiles(ctx, sessionID, drivers, carTimeline, posTimeline, timingTimeline); err != nil {
+		return err
+	}
+	if err := p.store.SetSessionReady(ctx, sessionID, true); err != nil {
 		return err
 	}
 
@@ -687,6 +743,7 @@ func (p *GoSessionProcessor) parsePositionStream(ctx context.Context, sessionPat
 	defer resp.Body.Close()
 
 	out := map[string][]posSample{}
+	lastAccepted := map[string]float64{}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 256*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -725,9 +782,19 @@ func (p *GoSessionProcessor) parsePositionStream(ctx context.Context, sessionPat
 				if !ok {
 					continue
 				}
+				if prev, ok := lastAccepted[racing]; ok && p.rawMinDelta > 0 && (ts-prev) < p.rawMinDelta {
+					continue
+				}
 				x := asFloat(ev["X"], 0)
 				y := asFloat(ev["Y"], 0)
+				// Position.z uses explicit (0,0) placeholders for absent points.
+				// Treat these as missing to avoid rendering parked/retired cars at
+				// an artificial normalized map location.
+				if x == 0 && y == 0 {
+					continue
+				}
 				out[racing] = append(out[racing], posSample{T: ts, X: x, Y: y})
+				lastAccepted[racing] = ts
 			}
 		}
 	}
@@ -749,6 +816,7 @@ func (p *GoSessionProcessor) parseCarDataStream(ctx context.Context, sessionPath
 	defer resp.Body.Close()
 
 	out := map[string][]carSample{}
+	lastAccepted := map[string]float64{}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 256*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -783,6 +851,9 @@ func (p *GoSessionProcessor) parseCarDataStream(ctx context.Context, sessionPath
 				continue
 			}
 			for racing, carAny := range cars {
+				if prev, ok := lastAccepted[racing]; ok && p.rawMinDelta > 0 && (ts-prev) < p.rawMinDelta {
+					continue
+				}
 				carObj, ok := carAny.(map[string]any)
 				if !ok {
 					continue
@@ -801,6 +872,7 @@ func (p *GoSessionProcessor) parseCarDataStream(ctx context.Context, sessionPath
 					DRS:      asInt(channels["45"]),
 				}
 				out[racing] = append(out[racing], c)
+				lastAccepted[racing] = ts
 			}
 		}
 	}
@@ -1371,14 +1443,7 @@ func normalizeCoord(v, min, scale float64) float64 {
 	return (v - min) / scale
 }
 
-func (p *GoSessionProcessor) writeReplayFromTimelines(relPath string, drivers []driverMeta, timing map[string][]timingState, positions map[string][]posSample, cars map[string][]carSample, trackStatuses []trackStatusPoint, weather []weatherPoint, rc []raceControlPoint, sessionType string, window *replayWindow, stintsByAbbr map[string][]map[string]any) (map[string]any, error) {
-	abs := filepath.Join(p.dataDir, relPath)
-	w, err := newReplayWriter(abs)
-	if err != nil {
-		return nil, err
-	}
-	defer w.closeNoReplace()
-
+func (p *GoSessionProcessor) writeReplayFromTimelines(ctx context.Context, sessionID int64, drivers []driverMeta, timing map[string][]timingState, positions map[string][]posSample, cars map[string][]carSample, trackStatuses []trackStatusPoint, weather []weatherPoint, rc []raceControlPoint, sessionType string, window *replayWindow, stintsByAbbr map[string][]map[string]any) (map[string]any, error) {
 	var tMin float64
 	var tMax float64
 	hasRange := false
@@ -1410,6 +1475,12 @@ func (p *GoSessionProcessor) writeReplayFromTimelines(relPath string, drivers []
 	if endT <= startT {
 		return nil, errors.New("invalid replay time window")
 	}
+	rw, err := p.store.BeginReplayWrite(ctx, sessionID, storage.ReplaySchemaVersion)
+	if err != nil {
+		return nil, err
+	}
+	defer rw.Rollback()
+
 	// Use the same normalization baseline as track.json to keep dots glued to the map.
 	refTrack := pickRepresentativeTrackLap(positions, timing)
 	xMin, yMin, scale := boundsForTrack(refTrack)
@@ -1424,23 +1495,58 @@ func (p *GoSessionProcessor) writeReplayFromTimelines(relPath string, drivers []
 		}
 	}
 	abbrToNumber := make(map[string]string, len(drivers))
+	hasCarData := make(map[string]bool, len(drivers))
 	for _, d := range drivers {
 		abbrToNumber[d.Abbr] = d.Number
+		hasCarData[d.Number] = len(cars[d.Number]) > 0
+	}
+	chunkFrames := make([]*storage.ReplayFramePayload, 0, p.replayChunkFrames)
+	chunkIndex := make([]storage.ReplayFrameIndexRow, 0, p.replayChunkFrames)
+	allIndex := make([]storage.ReplayFrameIndexRow, 0, 4096)
+	frameSeq := 0
+	chunkSeq := 0
+	totalTime := 0.0
+	flushChunk := func() error {
+		if len(chunkFrames) == 0 {
+			return nil
+		}
+		payload, err := storage.EncodeReplayChunk(p.replayChunkCodec, storage.ReplaySchemaVersion, chunkFrames)
+		if err != nil {
+			return err
+		}
+		row := storage.ReplayChunkRow{
+			ChunkSeq:   chunkSeq,
+			StartTSMS:  chunkFrames[0].TimestampMs,
+			EndTSMS:    chunkFrames[len(chunkFrames)-1].TimestampMs,
+			FrameCount: len(chunkFrames),
+			Codec:      p.replayChunkCodec,
+			Payload:    payload,
+		}
+		if err := rw.InsertChunk(ctx, row); err != nil {
+			return err
+		}
+		for _, idx := range chunkIndex {
+			if err := rw.InsertFrameIndex(ctx, idx); err != nil {
+				return err
+			}
+			allIndex = append(allIndex, idx)
+		}
+		chunkSeq++
+		chunkFrames = chunkFrames[:0]
+		chunkIndex = chunkIndex[:0]
+		return nil
 	}
 
 	for t := startT; t <= endT; t += p.sampleEvery {
 		driverRows := make([]map[string]any, 0, len(drivers))
 		for _, d := range drivers {
-			ps := nearestPosSample(positions[d.Number], t)
-			if ps == nil {
-				continue
-			}
+			ps := nearestPosSampleWithin(positions[d.Number], t, 10.0)
 			ts := latestTimingAt(timing[d.Number], t)
 			cs := latestCarAt(cars[d.Number], t)
 			row := map[string]any{
 				"abbr":              d.Abbr,
-				"x":                 normalizeCoord(ps.X, xMin, scale),
-				"y":                 normalizeCoord(ps.Y, yMin, scale),
+				"x":                 0.0,
+				"y":                 0.0,
 				"color":             d.Color,
 				"team":              d.Team,
 				"position":          nil,
@@ -1459,7 +1565,7 @@ func (p *GoSessionProcessor) writeReplayFromTimelines(relPath string, drivers []
 				"best_lap_time":     nil,
 				"no_timing":         true,
 				"retired":           false,
-				"relative_distance": nil,
+				"relative_distance": 0.0,
 				"speed":             0.0,
 				"throttle":          0.0,
 				"brake":             false,
@@ -1467,6 +1573,10 @@ func (p *GoSessionProcessor) writeReplayFromTimelines(relPath string, drivers []
 				"rpm":               0.0,
 				"drs":               0,
 				"tyre_history":      []any{},
+			}
+			if ps != nil {
+				row["x"] = normalizeCoord(ps.X, xMin, scale)
+				row["y"] = normalizeCoord(ps.Y, yMin, scale)
 			}
 			if ts != nil {
 				row["position"] = zeroToNil(ts.Position)
@@ -1489,6 +1599,9 @@ func (p *GoSessionProcessor) writeReplayFromTimelines(relPath string, drivers []
 				row["gear"] = cs.Gear
 				row["rpm"] = round1(cs.RPM)
 				row["drs"] = cs.DRS
+			}
+			if !hasCarData[d.Number] {
+				applyNoCarDataFallback(row, sessionType, t-startT)
 			}
 			driverRows = append(driverRows, row)
 		}
@@ -1528,22 +1641,79 @@ func (p *GoSessionProcessor) writeReplayFromTimelines(relPath string, drivers []
 				frame["rc_messages"] = msgs
 			}
 		}
-		if err := w.writeFrame(frame); err != nil {
+		frameRaw, err := json.Marshal(frame)
+		if err != nil {
 			return nil, err
 		}
+		frameTS := round3(t - startT)
+		totalTime = frameTS
+		tsMS := int64(math.Round(frameTS * 1000.0))
+		chunkFrames = append(chunkFrames, &storage.ReplayFramePayload{
+			TimestampMs: tsMS,
+			Lap:         int32(curLap),
+			FrameJson:   frameRaw,
+		})
+		chunkIndex = append(chunkIndex, storage.ReplayFrameIndexRow{
+			FrameSeq:     frameSeq,
+			TimestampMS:  tsMS,
+			Lap:          curLap,
+			ChunkSeq:     chunkSeq,
+			FrameInChunk: len(chunkFrames) - 1,
+		})
+		frameSeq++
+		if len(chunkFrames) >= p.replayChunkFrames {
+			if err := flushChunk(); err != nil {
+				return nil, err
+			}
+		}
 	}
-	if err := w.commit(); err != nil {
+	if err := flushChunk(); err != nil {
 		return nil, err
 	}
+	if err := rw.Commit(ctx, totalLaps, totalTime, []map[string]any{}); err != nil {
+		return nil, err
+	}
+	idxOut := make([]map[string]any, 0, len(allIndex))
+	for _, row := range allIndex {
+		idxOut = append(idxOut, map[string]any{
+			"frame_seq":      row.FrameSeq,
+			"ts_ms":          row.TimestampMS,
+			"lap":            row.Lap,
+			"chunk_seq":      row.ChunkSeq,
+			"frame_in_chunk": row.FrameInChunk,
+		})
+	}
 	return map[string]any{
-		"version":         1,
-		"replay_size":     w.offset + 1,
+		"version":         storage.ReplaySchemaVersion,
+		"replay_size":     len(allIndex),
 		"replay_mod_unix": time.Now().Unix(),
-		"frames":          w.frames,
-		"total_time":      w.totalTime,
-		"total_laps":      w.totalLaps,
-		"quali_phases":    w.quali,
+		"frames":          idxOut,
+		"total_time":      totalTime,
+		"total_laps":      totalLaps,
+		"quali_phases":    []map[string]any{},
 	}, nil
+}
+
+func applyNoCarDataFallback(row map[string]any, sessionType string, elapsed float64) {
+	if row == nil {
+		return
+	}
+	// Keep no-car drivers off the track map: they never had usable telemetry.
+	row["x"] = 0.0
+	row["y"] = 0.0
+	row["relative_distance"] = 0.0
+	row["position"] = nil
+	row["gap"] = nil
+	row["interval"] = nil
+
+	sessionType = strings.ToUpper(strings.TrimSpace(sessionType))
+	isRace := sessionType == "R" || sessionType == "S"
+	if isRace && elapsed >= 10 {
+		row["retired"] = true
+		row["no_timing"] = false
+		return
+	}
+	row["no_timing"] = true
 }
 
 func currentLapFromLeader(sessionType string, totalLaps int, leaderAbbr string, abbrToNumber map[string]string, timing map[string][]timingState, t float64) int {
@@ -1598,7 +1768,12 @@ func parseLapFromGapString(gap string) int {
 	return n
 }
 
-func (p *GoSessionProcessor) writeTelemetryFiles(baseOut string, drivers []driverMeta, cars map[string][]carSample, pos map[string][]posSample, timing map[string][]timingState) error {
+func (p *GoSessionProcessor) writeTelemetryFiles(ctx context.Context, sessionID int64, drivers []driverMeta, cars map[string][]carSample, pos map[string][]posSample, timing map[string][]timingState) error {
+	tw, err := p.store.BeginTelemetryWrite(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	defer tw.Rollback()
 	for _, d := range drivers {
 		samples := cars[d.Number]
 		if len(samples) == 0 {
@@ -1620,15 +1795,11 @@ func (p *GoSessionProcessor) writeTelemetryFiles(baseOut string, drivers []drive
 			laps = append(laps, lap)
 		}
 		sort.Ints(laps)
-		items := make([]struct {
-			K string
-			V map[string]any
-		}, 0, len(laps))
 		for _, lap := range laps {
 			arr := byLap[lap]
 			step := 1
-			if len(arr) > 500 {
-				step = len(arr) / 500
+			if len(arr) > p.telemetryChunkSamples {
+				step = len(arr) / p.telemetryChunkSamples
 			}
 			dist := make([]float64, 0, len(arr)/step+1)
 			speed := make([]float64, 0, len(arr)/step+1)
@@ -1657,31 +1828,38 @@ func (p *GoSessionProcessor) writeTelemetryFiles(baseOut string, drivers []drive
 					rel = append(rel, 0.0)
 				}
 			}
-			items = append(items, struct {
-				K string
-				V map[string]any
-			}{
-				K: strconv.Itoa(lap),
-				V: map[string]any{
-					"driver":            d.Abbr,
-					"lap":               lap,
-					"distance":          dist,
-					"speed":             speed,
-					"throttle":          throttle,
-					"brake":             brake,
-					"gear":              gear,
-					"rpm":               rpm,
-					"drs":               drs,
-					"relative_distance": rel,
-				},
-			})
-		}
-		rel := filepath.Join(baseOut, "telemetry", d.Abbr+".json")
-		if err := p.writeJSONObjectItems(rel, items); err != nil {
-			return err
+			item := map[string]any{
+				"driver":            d.Abbr,
+				"lap":               lap,
+				"distance":          dist,
+				"speed":             speed,
+				"throttle":          throttle,
+				"brake":             brake,
+				"gear":              gear,
+				"rpm":               rpm,
+				"drs":               drs,
+				"relative_distance": rel,
+			}
+			body, err := json.Marshal(item)
+			if err != nil {
+				return err
+			}
+			chunkPayload, err := storage.EncodeTelemetryChunk(p.telemetryChunkCodec, storage.ReplaySchemaVersion, d.Abbr, lap, body)
+			if err != nil {
+				return err
+			}
+			if err := tw.InsertChunk(ctx, storage.TelemetryChunkRow{
+				DriverAbbr: d.Abbr,
+				Lap:        lap,
+				ChunkSeq:   0,
+				Codec:      p.telemetryChunkCodec,
+				Payload:    chunkPayload,
+			}); err != nil {
+				return err
+			}
 		}
 	}
-	return nil
+	return tw.Commit(ctx)
 }
 
 func extractTimingAppStints(timingApp map[string]any, byNum map[string]driverMeta) map[string][]map[string]any {
@@ -1703,18 +1881,50 @@ func extractTimingAppStints(timingApp map[string]any, byNum map[string]driverMet
 		if abbr == "" {
 			continue
 		}
-		stintsAny, _ := obj["Stints"].([]any)
-		stints := make([]map[string]any, 0, len(stintsAny))
-		for _, s := range stintsAny {
+		stints := normalizeTimingAppStints(obj["Stints"])
+		out[abbr] = stints
+	}
+	return out
+}
+
+func normalizeTimingAppStints(raw any) []map[string]any {
+	switch v := raw.(type) {
+	case []any:
+		out := make([]map[string]any, 0, len(v))
+		for _, s := range v {
 			m, ok := s.(map[string]any)
 			if !ok {
 				continue
 			}
-			stints = append(stints, m)
+			out = append(out, m)
 		}
-		out[abbr] = stints
+		return out
+	case map[string]any:
+		type keyedStint struct {
+			Index int
+			Item  map[string]any
+		}
+		keyed := make([]keyedStint, 0, len(v))
+		for k, s := range v {
+			m, ok := s.(map[string]any)
+			if !ok {
+				continue
+			}
+			idx := math.MaxInt32
+			if parsed, err := strconv.Atoi(strings.TrimSpace(k)); err == nil {
+				idx = parsed
+			}
+			keyed = append(keyed, keyedStint{Index: idx, Item: m})
+		}
+		sort.SliceStable(keyed, func(i, j int) bool { return keyed[i].Index < keyed[j].Index })
+		out := make([]map[string]any, 0, len(keyed))
+		for _, item := range keyed {
+			out = append(out, item.Item)
+		}
+		return out
+	default:
+		return nil
 	}
-	return out
 }
 
 func stintForLap(stints []map[string]any, lap int) (any, any) {
@@ -1723,8 +1933,10 @@ func stintForLap(stints []map[string]any, lap int) (any, any) {
 }
 
 type stintState struct {
-	StartLap int
-	Compound string
+	StartLap  int
+	EndLap    int
+	StartLife int
+	Compound  string
 }
 
 func lapForTyreState(sessionType string, completedLaps int) int {
@@ -1752,18 +1964,20 @@ func tyreStateForLap(stints []map[string]any, lap int) (any, any, []any, int) {
 
 	idx := -1
 	for i := range parsed {
-		if parsed[i].StartLap <= lap {
-			idx = i
-		} else {
+		if parsed[i].StartLap > lap {
 			break
 		}
+		if parsed[i].EndLap > 0 && lap > parsed[i].EndLap {
+			continue
+		}
+		idx = i
 	}
 	if idx < 0 {
 		return nil, nil, []any{}, 0
 	}
 
 	current := parsed[idx]
-	life := lap - current.StartLap + 1
+	life := current.StartLife + (lap - current.StartLap + 1)
 	if life < 1 {
 		life = 1
 	}
@@ -1778,18 +1992,36 @@ func tyreStateForLap(stints []map[string]any, lap int) (any, any, []any, int) {
 
 func parseStintStates(stints []map[string]any) []stintState {
 	out := make([]stintState, 0, len(stints))
+	nextStartLap := 1
 	for _, s := range stints {
-		start := asInt(s["LapNumber"])
-		if start <= 0 {
-			continue
-		}
 		compound := asString(s["Compound"])
 		if compound == "" {
 			continue
 		}
+		start := 0
+		totalLaps := asInt(s["TotalLaps"])
+		if totalLaps > 0 && nextStartLap > 0 {
+			start = nextStartLap
+		} else {
+			start = asInt(s["LapNumber"])
+		}
+		if start <= 0 {
+			continue
+		}
+		end := 0
+		if totalLaps > 0 {
+			end = start + totalLaps - 1
+			nextStartLap = end + 1
+		}
+		startLife := asInt(s["StartLaps"])
+		if startLife < 0 {
+			startLife = 0
+		}
 		out = append(out, stintState{
-			StartLap: start,
-			Compound: strings.ToUpper(strings.TrimSpace(compound)),
+			StartLap:  start,
+			EndLap:    end,
+			StartLife: startLife,
+			Compound:  strings.ToUpper(strings.TrimSpace(compound)),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1807,6 +2039,12 @@ func parseStintStates(stints []map[string]any) []stintState {
 		}
 		dedup = append(dedup, s)
 		lastStart = s.StartLap
+	}
+	// If a stint has no explicit end, cap it by the next stint start.
+	for i := 0; i+1 < len(dedup); i++ {
+		if dedup[i].EndLap <= 0 {
+			dedup[i].EndLap = dedup[i+1].StartLap - 1
+		}
 	}
 	return dedup
 }
@@ -1861,6 +2099,20 @@ func nearestPosSample(arr []posSample, t float64) *posSample {
 		return &prev
 	}
 	return &next
+}
+
+func nearestPosSampleWithin(arr []posSample, t, maxDeltaSeconds float64) *posSample {
+	ps := nearestPosSample(arr, t)
+	if ps == nil {
+		return nil
+	}
+	if maxDeltaSeconds <= 0 {
+		return ps
+	}
+	if math.Abs(ps.T-t) > maxDeltaSeconds {
+		return nil
+	}
+	return ps
 }
 
 func latestCarAt(arr []carSample, t float64) *carSample {
@@ -2007,19 +2259,15 @@ func (w *replayWriter) closeNoReplace() {
 }
 
 func (p *GoSessionProcessor) writeJSONAtomic(rel string, data any) error {
-	abs := filepath.Join(p.dataDir, rel)
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return err
-	}
 	body, err := json.Marshal(data)
 	if err != nil {
 		return err
 	}
-	tmp := abs + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o644); err != nil {
-		return err
+	if p.store == nil {
+		return errors.New("sqlite store is not configured")
 	}
-	if err := os.Rename(tmp, abs); err != nil {
+	rel = filepath.ToSlash(rel)
+	if err := p.store.PutJSONArtifact(context.Background(), rel, body); err != nil {
 		return err
 	}
 	log.Printf("processor(go): saved %s (%d bytes)", rel, len(body))
@@ -2030,47 +2278,35 @@ func (p *GoSessionProcessor) writeJSONObjectItems(rel string, items []struct {
 	K string
 	V map[string]any
 }) error {
-	abs := filepath.Join(p.dataDir, rel)
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return err
+	if p.store == nil {
+		return errors.New("sqlite store is not configured")
 	}
-	tmp := abs + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err := f.Write([]byte("{")); err != nil {
+	buf := bytes.NewBuffer(make([]byte, 0, 1024))
+	if _, err := buf.Write([]byte("{")); err != nil {
 		return err
 	}
 	for i, it := range items {
 		if i > 0 {
-			if _, err := f.Write([]byte(",")); err != nil {
+			if _, err := buf.Write([]byte(",")); err != nil {
 				return err
 			}
 		}
 		kb, _ := json.Marshal(it.K)
 		vb, _ := json.Marshal(it.V)
-		if _, err := f.Write(kb); err != nil {
+		if _, err := buf.Write(kb); err != nil {
 			return err
 		}
-		if _, err := f.Write([]byte(":")); err != nil {
+		if _, err := buf.Write([]byte(":")); err != nil {
 			return err
 		}
-		if _, err := f.Write(vb); err != nil {
+		if _, err := buf.Write(vb); err != nil {
 			return err
 		}
 	}
-	if _, err := f.Write([]byte("}")); err != nil {
+	if _, err := buf.Write([]byte("}")); err != nil {
 		return err
 	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, abs); err != nil {
-		return err
-	}
-	return nil
+	return p.store.PutJSONArtifact(context.Background(), filepath.ToSlash(rel), buf.Bytes())
 }
 
 func (p *GoSessionProcessor) fetchJSON(ctx context.Context, url string, out any) error {

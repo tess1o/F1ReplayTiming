@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,8 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -112,7 +109,6 @@ type queueSnapshot struct {
 
 type downloadManager struct {
 	app         *app
-	statePath   string
 	timeout     time.Duration
 	maxAttempts int
 	retryBase   time.Duration
@@ -131,7 +127,6 @@ func newDownloadManager(app *app, dataDir string) *downloadManager {
 
 	m := &downloadManager{
 		app:         app,
-		statePath:   filepath.Join(dataDir, "downloads", "state.json"),
 		timeout:     time.Duration(timeoutMinutes) * time.Minute,
 		maxAttempts: maxAttempts,
 		retryBase:   time.Duration(retryBaseSec) * time.Second,
@@ -343,7 +338,10 @@ func cloneJob(job *downloadJob) *downloadJob {
 }
 
 func (m *downloadManager) loadState() {
-	b, err := os.ReadFile(m.statePath)
+	if m.app.store == nil {
+		return
+	}
+	b, err := m.app.store.LoadDownloadStateBlob(context.Background())
 	if err != nil {
 		return
 	}
@@ -410,24 +408,16 @@ func (m *downloadManager) persistLocked() {
 		Active: m.active,
 		Recent: m.recent,
 	}
-	b, err := json.MarshalIndent(state, "", "  ")
+	b, err := json.Marshal(state)
 	if err != nil {
 		log.Printf("downloads: persist marshal failed: %v", err)
 		return
 	}
-
-	dir := filepath.Dir(m.statePath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		log.Printf("downloads: persist mkdir failed: %v", err)
+	if m.app.store == nil {
 		return
 	}
-	tmp := m.statePath + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		log.Printf("downloads: persist write failed: %v", err)
-		return
-	}
-	if err := os.Rename(tmp, m.statePath); err != nil {
-		log.Printf("downloads: persist rename failed: %v", err)
+	if err := m.app.store.SaveDownloadStateBlob(context.Background(), b); err != nil {
+		log.Printf("downloads: persist sqlite failed: %v", err)
 	}
 }
 
@@ -653,106 +643,29 @@ func (m *downloadManager) failedKeysByYear(year int) []sessionKey {
 }
 
 func (a *app) runProcessSessionWorker(ctx context.Context, year, round int, sessionType string, onStatus func(string)) error {
-	if a.processor != nil {
-		return a.processor.ProcessSession(ctx, year, round, sessionType, onStatus)
+	if a.processor == nil {
+		return errors.New("session processor is not initialized")
 	}
-	args := []string{
-		a.workerPath,
-		"process-session",
-		"--year", strconv.Itoa(year),
-		"--round", strconv.Itoa(round),
-		"--type", strings.ToUpper(strings.TrimSpace(sessionType)),
-	}
-	cmd := exec.CommandContext(ctx, a.pythonBin, args...)
-	cmd.Env = os.Environ()
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var statusErr error
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		s := bufio.NewScanner(stderr)
-		buf := make([]byte, 0, 64*1024)
-		s.Buffer(buf, 1024*1024)
-		for s.Scan() {
-			log.Printf("worker stderr: %s", s.Text())
-		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		s := bufio.NewScanner(stdout)
-		buf := make([]byte, 0, 64*1024)
-		s.Buffer(buf, 1024*1024)
-		for s.Scan() {
-			line := s.Bytes()
-			var evt map[string]any
-			if err := json.Unmarshal(line, &evt); err != nil {
-				log.Printf("worker out: %s", string(line))
-				continue
-			}
-			typ := asString(evt["type"])
-			if typ == "status" && onStatus != nil {
-				onStatus(asString(evt["message"]))
-			}
-			if typ == "error" {
-				mu.Lock()
-				statusErr = errors.New(defaultString(asString(evt["message"]), "worker failed"))
-				mu.Unlock()
-			}
-		}
-	}()
-
-	waitErr := cmd.Wait()
-	wg.Wait()
-
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return ctx.Err()
-	}
-
-	mu.Lock()
-	errCopy := statusErr
-	mu.Unlock()
-	if errCopy != nil {
-		return errCopy
-	}
-	if waitErr != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return waitErr
-	}
-	return nil
+	return a.processor.ProcessSession(ctx, year, round, sessionType, onStatus)
 }
 
 func (a *app) isSessionDownloaded(year, round int, sessionType string) bool {
-	base := filepath.Join("sessions", strconv.Itoa(year), strconv.Itoa(round), strings.ToUpper(strings.TrimSpace(sessionType)))
-	return a.fileExists(filepath.Join(base, "replay.json")) && a.fileExists(filepath.Join(base, "info.json"))
+	if a.store == nil {
+		return false
+	}
+	ready, _, err := a.store.SessionReady(context.Background(), year, round, strings.ToUpper(strings.TrimSpace(sessionType)))
+	return err == nil && ready
 }
 
 func (a *app) sessionDataUpdatedAt(year, round int, sessionType string) (time.Time, bool) {
-	p := filepath.Join(a.dataDir, "sessions", strconv.Itoa(year), strconv.Itoa(round), strings.ToUpper(strings.TrimSpace(sessionType)), "replay.json")
-	st, err := os.Stat(p)
-	if err != nil {
+	if a.store == nil {
 		return time.Time{}, false
 	}
-	return st.ModTime(), true
+	_, updated, err := a.store.SessionReady(context.Background(), year, round, strings.ToUpper(strings.TrimSpace(sessionType)))
+	if err != nil || updated.IsZero() {
+		return time.Time{}, false
+	}
+	return updated, true
 }
 
 func (a *app) sessionDownloadStatus(year, round int, sessionType string) sessionDownloadStatus {

@@ -6,10 +6,13 @@ services:
       dockerfile: backend/Dockerfile
     environment:
       - DATA_DIR=/data
+      - SQLITE_PATH=/data/f1.db
       - REPLAY_CACHE_MAX_MB=64
       - REPLAY_CACHE_TTL_SECONDS=45
       - GOMEMLIMIT=192MiB
       - GOGC=30
+      - PROCESS_CHUNK_CODEC=protobuf
+      - PROCESS_RAW_MIN_DT_SECONDS=0.10
       # Optional - uncomment to enable features
       # - AUTH_ENABLED=true
       # - AUTH_PASSPHRASE=your-passphrase
@@ -18,7 +21,6 @@ services:
       # - EXTRA_ORIGINS=https://f1.example.com
     volumes:
       - f1data:/data
-      - f1cache:/data/fastf1-cache
 
   f1-frontend:
     build: ./frontend
@@ -35,4 +37,3 @@ services:
 
 volumes:
   f1data:
-  f1cache:

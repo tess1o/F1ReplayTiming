@@ -1,6 +1,10 @@
 package main
 
-import "context"
+import (
+	"context"
+
+	"f1replaytiming/backend/storage"
+)
 
 // SessionProcessor handles schedule + historical session artifact generation.
 // Live streaming remains separate (phase 2).
@@ -9,14 +13,6 @@ type SessionProcessor interface {
 	ProcessSession(ctx context.Context, year, round int, sessionType string, onStatus func(string)) error
 }
 
-func NewSessionProcessor(mode, dataDir, workerPath, pythonBin string) SessionProcessor {
-	switch mode {
-	case "", "go":
-		return NewGoSessionProcessor(dataDir)
-	case "python":
-		return nil
-	default:
-		// Unknown mode: fall back to Go so deployments don't silently disable processing.
-		return NewGoSessionProcessor(dataDir)
-	}
+func NewSessionProcessor(dataDir string, store *storage.Store, replayChunkFrames, telemetryChunkSamples int) SessionProcessor {
+	return NewGoSessionProcessor(dataDir, store, replayChunkFrames, telemetryChunkSamples)
 }

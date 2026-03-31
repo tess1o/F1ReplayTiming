@@ -16,7 +16,7 @@ export default function AboutPage() {
         <div className="bg-f1-card border border-f1-red/40 rounded-xl p-6">
           <h2 className="text-lg font-bold text-f1-red mb-3">Disclaimer</h2>
           <p className="text-f1-text leading-relaxed">
-            F1 Replay Timing, FastF1, and this website are unofficial and are not associated in any way with the
+            F1 Replay Timing and this website are unofficial and are not associated in any way with the
             Formula 1 companies. F1, FORMULA ONE, FORMULA 1, FIA FORMULA ONE WORLD CHAMPIONSHIP, GRAND PRIX and
             related marks are trade marks of Formula One Licensing B.V.
           </p>
@@ -37,17 +37,8 @@ export default function AboutPage() {
             All data is sourced from publicly available APIs. No proprietary or restricted data is used.
           </p>
           <p className="text-f1-text leading-relaxed">
-            This project relies on underlying data provided by{" "}
-            <a
-              href="https://github.com/theOehrly/Fast-F1"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-f1-red hover:underline font-semibold"
-            >
-              FastF1
-            </a>
-            , an open-source Python library for accessing Formula 1 timing and telemetry data.
-            Thanks to the FastF1 maintainers and contributors for making this possible.
+            Historical and live timing data are fetched directly from official F1 timing endpoints and processed by
+            the Go backend.
           </p>
         </div>
 

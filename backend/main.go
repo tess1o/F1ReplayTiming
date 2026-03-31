@@ -12,9 +12,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"f1replaytiming/backend/storage"
 	"github.com/gorilla/websocket"
 )
 
@@ -41,10 +42,9 @@ var (
 
 type app struct {
 	dataDir         string
-	workerPath      string
-	pythonBin       string
-	processorMode   string
 	processor       SessionProcessor
+	store           *storage.Store
+	replayChunkSize int
 	replayCache     *replayCache
 	downloads       *downloadManager
 	allowedOrigins  map[string]struct{}
@@ -70,7 +70,7 @@ type replayCache struct {
 type replayCacheEntry struct {
 	key         string
 	sizeBytes   int64
-	replayPath  string
+	sessionID   int64
 	frames      []replayFrameMeta
 	totalLaps   int
 	totalTime   float64
@@ -81,10 +81,14 @@ type replayCacheEntry struct {
 }
 
 type replayFrameMeta struct {
-	Start     int64   `json:"start"`
-	End       int64   `json:"end"`
-	Timestamp float64 `json:"timestamp"`
-	Lap       int     `json:"lap"`
+	Start        int64   `json:"start,omitempty"`
+	End          int64   `json:"end,omitempty"`
+	FrameSeq     int     `json:"frame_seq"`
+	TimestampMS  int64   `json:"ts_ms"`
+	Timestamp    float64 `json:"timestamp"`
+	Lap          int     `json:"lap"`
+	ChunkSeq     int     `json:"chunk_seq"`
+	FrameInChunk int     `json:"frame_in_chunk"`
 }
 
 type replayIndexFile struct {
@@ -111,17 +115,14 @@ func main() {
 
 	dataDir := strings.TrimSpace(os.Getenv("DATA_DIR"))
 	if dataDir == "" {
-		dataDir = filepath.Clean(filepath.Join("..", "data-fetcher", "data"))
+		dataDir = filepath.Clean("data")
 	}
-
-	workerPath := strings.TrimSpace(os.Getenv("PY_WORKER_PATH"))
-	if workerPath == "" {
-		workerPath = filepath.Clean(filepath.Join("..", "data-fetcher", "worker_bridge.py"))
-	}
-	pythonBin := strings.TrimSpace(os.Getenv("PYTHON_BIN"))
-	if pythonBin == "" {
-		pythonBin = "python3"
-	}
+	store := openStore(dataDir)
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("warning: failed to close sqlite store: %v", err)
+		}
+	}()
 
 	maxCacheMB := int64(256)
 	if raw := strings.TrimSpace(os.Getenv("REPLAY_CACHE_MAX_MB")); raw != "" {
@@ -135,20 +136,31 @@ func main() {
 			cacheTTL = time.Duration(n) * time.Second
 		}
 	}
+	replayChunkFrames := 256
+	if raw := strings.TrimSpace(os.Getenv("REPLAY_CHUNK_FRAMES")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			replayChunkFrames = n
+		}
+	}
+	telemetryChunkSamples := 512
+	if raw := strings.TrimSpace(os.Getenv("TELEMETRY_CHUNK_SAMPLES")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			telemetryChunkSamples = n
+		}
+	}
 
 	app := &app{
-		dataDir:        dataDir,
-		workerPath:     workerPath,
-		pythonBin:      pythonBin,
-		processorMode:  strings.ToLower(defaultString(strings.TrimSpace(os.Getenv("PROCESSOR_MODE")), "go")),
-		replayCache:    newReplayCache(maxCacheMB*1024*1024, cacheTTL),
-		allowedOrigins: buildAllowedOrigins(),
-		authEnabled:    isTrue(os.Getenv("AUTH_ENABLED")),
-		authPassphrase: os.Getenv("AUTH_PASSPHRASE"),
-		sessionLocks:   make(map[string]*sync.Mutex),
-		scheduleLocks:  make(map[int]*sync.Mutex),
+		dataDir:         dataDir,
+		store:           store,
+		replayChunkSize: replayChunkFrames,
+		replayCache:     newReplayCache(maxCacheMB*1024*1024, cacheTTL),
+		allowedOrigins:  buildAllowedOrigins(),
+		authEnabled:     isTrue(os.Getenv("AUTH_ENABLED")),
+		authPassphrase:  os.Getenv("AUTH_PASSPHRASE"),
+		sessionLocks:    make(map[string]*sync.Mutex),
+		scheduleLocks:   make(map[int]*sync.Mutex),
 	}
-	app.processor = NewSessionProcessor(app.processorMode, dataDir, workerPath, pythonBin)
+	app.processor = NewSessionProcessor(dataDir, store, replayChunkFrames, telemetryChunkSamples)
 	app.downloads = newDownloadManager(app, dataDir)
 	app.downloads.start()
 
@@ -175,7 +187,7 @@ func main() {
 	mux.HandleFunc("GET /ws/live/{year}/{round}", app.handleLiveWebSocket)
 
 	handler := app.withMiddleware(mux)
-	log.Printf("Go backend listening on :%s (data_dir=%s processor_mode=%s)", port, dataDir, app.processorMode)
+	log.Printf("Go backend listening on :%s (data_dir=%s)", port, dataDir)
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}
@@ -482,22 +494,26 @@ func (a *app) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := a.readJSONAny(filepath.Join("sessions", strconv.Itoa(year), strconv.Itoa(round), sessionType, "telemetry", driver+".json"))
+	if a.store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"detail": "Storage is not initialized"})
+		return
+	}
+	payload, codec, err := a.store.GetTelemetryPayload(r.Context(), year, round, sessionType, driver, lap)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"detail": "Telemetry not available for this driver"})
-		return
-	}
-	m, ok := data.(map[string]any)
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]any{"detail": "Telemetry not available for this driver"})
-		return
-	}
-	lapData, ok := m[strconv.Itoa(lap)]
-	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]any{"detail": "Telemetry not available for this lap"})
 		return
 	}
-	writeJSON(w, http.StatusOK, lapData)
+	decoded, err := storage.DecodeTelemetryChunk(payload, codec)
+	if err != nil || len(decoded.PayloadJson) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]any{"detail": "Telemetry not available for this lap"})
+		return
+	}
+	var out any
+	if err := json.Unmarshal(decoded.PayloadJson, &out); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"detail": "Telemetry payload is invalid"})
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (a *app) handleLiveStatus(w http.ResponseWriter, _ *http.Request) {
@@ -647,12 +663,14 @@ func (a *app) handleReplayWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	a.replayCache.connect(entry.key)
 	defer a.replayCache.disconnect(entry.key)
-	replayFile, err := os.Open(entry.replayPath)
-	if err != nil {
-		_ = send(map[string]any{"type": "error", "message": "Replay file is not readable"})
+	if a.store == nil {
+		_ = send(map[string]any{"type": "error", "message": "Storage is not initialized"})
 		return
 	}
-	defer replayFile.Close()
+	type cachedReplayChunk struct {
+		payloads [][]byte
+	}
+	chunkCache := make(map[int]*cachedReplayChunk, 8)
 
 	pitLoss := a.resolvePitLoss(year, round, sessionType)
 	isRace := sessionType == "R" || sessionType == "S"
@@ -665,10 +683,41 @@ func (a *app) handleReplayWebSocket(w http.ResponseWriter, r *http.Request) {
 		"quali_phases": entry.qualiPhases,
 	})
 
-	if firstRaw, err := readFrameAt(replayFile, entry.frames[0]); err == nil {
-		if b, err := prepareFramePayload(firstRaw, isRace, pitLoss); err == nil {
-			_ = conn.WriteMessage(websocket.TextMessage, b)
+	readFrameRaw := func(meta replayFrameMeta) (json.RawMessage, error) {
+		cached, ok := chunkCache[meta.ChunkSeq]
+		if !ok {
+			payload, codec, err := a.store.GetReplayChunkPayload(r.Context(), entry.sessionID, meta.ChunkSeq)
+			if err != nil {
+				return nil, err
+			}
+			decoded, err := storage.DecodeReplayChunk(payload, codec)
+			if err != nil {
+				return nil, err
+			}
+			cached = &cachedReplayChunk{payloads: make([][]byte, 0, len(decoded.Frames))}
+			for _, frame := range decoded.Frames {
+				prepared, err := prepareFramePayload(frame.FrameJson, isRace, pitLoss)
+				if err != nil {
+					prepared = wrapFrameRaw(frame.FrameJson)
+				}
+				cached.payloads = append(cached.payloads, prepared)
+			}
+			if len(chunkCache) >= 8 {
+				for k := range chunkCache {
+					delete(chunkCache, k)
+					break
+				}
+			}
+			chunkCache[meta.ChunkSeq] = cached
 		}
+		if meta.FrameInChunk < 0 || meta.FrameInChunk >= len(cached.payloads) {
+			return nil, errors.New("frame index out of bounds")
+		}
+		return cached.payloads[meta.FrameInChunk], nil
+	}
+
+	if firstRaw, err := readFrameRaw(entry.frames[0]); err == nil {
+		_ = conn.WriteMessage(websocket.TextMessage, firstRaw)
 	} else {
 		_ = send(map[string]any{"type": "error", "message": "Failed to read replay frame"})
 		return
@@ -705,32 +754,32 @@ func (a *app) handleReplayWebSocket(w http.ResponseWriter, r *http.Request) {
 		if i < 0 || i >= len(entry.frames) {
 			return false
 		}
-		frameRaw, err := readFrameAt(replayFile, entry.frames[i])
+		frameRaw, err := readFrameRaw(entry.frames[i])
 		if err != nil {
 			return false
 		}
-		if b, err := prepareFramePayload(frameRaw, isRace, pitLoss); err == nil {
-			_ = conn.WriteMessage(websocket.TextMessage, b)
-			return true
-		}
-		return false
+		_ = conn.WriteMessage(websocket.TextMessage, frameRaw)
+		return true
 	}
 
 	findByTime := func(target float64) int {
-		for i, frame := range entry.frames {
-			if frame.Timestamp >= target {
-				return i
-			}
+		targetMS := int64(math.Round(target * 1000.0))
+		idx := sort.Search(len(entry.frames), func(i int) bool {
+			return entry.frames[i].TimestampMS >= targetMS
+		})
+		if idx >= len(entry.frames) {
+			return len(entry.frames) - 1
 		}
-		return len(entry.frames) - 1
+		return idx
 	}
 	findByLap := func(target int) int {
-		for i, frame := range entry.frames {
-			if frame.Lap >= target {
-				return i
-			}
+		idx := sort.Search(len(entry.frames), func(i int) bool {
+			return entry.frames[i].Lap >= target
+		})
+		if idx >= len(entry.frames) {
+			return len(entry.frames) - 1
 		}
-		return len(entry.frames) - 1
+		return idx
 	}
 
 	handleCmd := func(cmd string) {
@@ -816,10 +865,6 @@ func (a *app) handleLiveWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if a.processor != nil && strings.EqualFold(a.processorMode, "go") {
-		http.Error(w, "Live stream is not available in Phase 1 Go processor mode", http.StatusNotImplemented)
-		return
-	}
 	year, err1 := strconv.Atoi(r.PathValue("year"))
 	round, err2 := strconv.Atoi(r.PathValue("round"))
 	if err1 != nil || err2 != nil {
@@ -842,63 +887,20 @@ func (a *app) handleLiveWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-
-	args := []string{
-		a.workerPath,
-		"live-stream",
-		"--year", strconv.Itoa(year),
-		"--round", strconv.Itoa(round),
-		"--type", sessionType,
-		"--source", source,
-		"--speed", speed,
+	_ = source
+	speedF, _ := strconv.ParseFloat(speed, 64)
+	if speedF <= 0 {
+		speedF = 10
 	}
 
-	cmd := exec.CommandContext(ctx, a.pythonBin, args...)
-	cmd.Env = os.Environ()
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		_ = conn.WriteJSON(map[string]any{"type": "error", "message": "Failed to start live worker"})
+	if err := conn.WriteJSON(map[string]any{"type": "status", "message": "Connecting to live timing stream..."}); err != nil {
 		return
 	}
-	stderr, _ := cmd.StderrPipe()
-
-	if err := cmd.Start(); err != nil {
-		_ = conn.WriteJSON(map[string]any{"type": "error", "message": "Failed to start live worker"})
-		return
+	if err := a.runLiveWebSocket(ctx, conn, year, round, sessionType, speedF); err != nil {
+		_ = conn.WriteJSON(map[string]any{"type": "error", "message": err.Error()})
 	}
-
-	go func() {
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			log.Printf("live-worker: %s", scanner.Text())
-		}
-	}()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if err := conn.WriteMessage(websocket.TextMessage, append([]byte{}, line...)); err != nil {
-				cancel()
-				return
-			}
-		}
-	}()
-
-	for {
-		if _, _, err := conn.ReadMessage(); err != nil {
-			break
-		}
-	}
-
-	cancel()
-	_ = cmd.Wait()
-	<-done
 }
 
 func (a *app) ensureSchedule(year int) error {
@@ -921,10 +923,10 @@ func (a *app) ensureSchedule(year int) error {
 		return nil
 	}
 
-	if a.processor != nil {
-		return a.processor.EnsureSchedule(context.Background(), year)
+	if a.processor == nil {
+		return errors.New("session processor is not initialized")
 	}
-	return a.runWorker("ensure-schedule", "--year", strconv.Itoa(year))
+	return a.processor.EnsureSchedule(context.Background(), year)
 }
 
 func (a *app) ensureSessionData(year, round int, sessionType string, onStatus func(string)) error {
@@ -949,73 +951,10 @@ func (a *app) ensureSessionData(year, round int, sessionType string, onStatus fu
 		return nil
 	}
 
-	if a.processor != nil {
-		return a.processor.ProcessSession(context.Background(), year, round, sessionType, onStatus)
+	if a.processor == nil {
+		return errors.New("session processor is not initialized")
 	}
-	return a.runWorkerStreaming([]string{"process-session", "--year", strconv.Itoa(year), "--round", strconv.Itoa(round), "--type", sessionType}, onStatus)
-}
-
-func (a *app) runWorker(args ...string) error {
-	return a.runWorkerStreaming(args, nil)
-}
-
-func (a *app) runWorkerStreaming(args []string, onStatus func(string)) error {
-	full := append([]string{a.workerPath}, args...)
-	cmd := exec.Command(a.pythonBin, full...)
-	cmd.Env = os.Environ()
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, _ := cmd.StderrPipe()
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	var wg sync.WaitGroup
-	var statusErr error
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			log.Printf("worker stderr: %s", scanner.Text())
-		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			var evt map[string]any
-			if err := json.Unmarshal(line, &evt); err != nil {
-				log.Printf("worker out: %s", string(line))
-				continue
-			}
-			typ := asString(evt["type"])
-			if typ == "status" && onStatus != nil {
-				onStatus(asString(evt["message"]))
-			}
-			if typ == "error" {
-				statusErr = errors.New(defaultString(asString(evt["message"]), "worker failed"))
-			}
-		}
-	}()
-
-	waitErr := cmd.Wait()
-	wg.Wait()
-	if statusErr != nil {
-		return statusErr
-	}
-	if waitErr != nil {
-		return waitErr
-	}
-	return nil
+	return a.processor.ProcessSession(context.Background(), year, round, sessionType, onStatus)
 }
 
 func (a *app) buildEvents(year int) (map[string]any, error) {
@@ -1108,8 +1047,10 @@ func parseDateMaybe(s string) (time.Time, bool) {
 }
 
 func (a *app) readJSONAny(rel string) (any, error) {
-	full := filepath.Join(a.dataDir, rel)
-	b, err := os.ReadFile(full)
+	if a.store == nil {
+		return nil, errors.New("sqlite store is not configured")
+	}
+	b, err := a.store.GetJSONArtifact(context.Background(), filepath.ToSlash(rel))
 	if err != nil {
 		return nil, err
 	}
@@ -1121,7 +1062,10 @@ func (a *app) readJSONAny(rel string) (any, error) {
 }
 
 func (a *app) fileExists(rel string) bool {
-	_, err := os.Stat(filepath.Join(a.dataDir, rel))
+	if a.store == nil {
+		return false
+	}
+	_, err := a.store.GetJSONArtifact(context.Background(), filepath.ToSlash(rel))
 	return err == nil
 }
 
@@ -1276,40 +1220,37 @@ func (c *replayCache) evictToBudgetLocked() {
 }
 
 func (a *app) loadReplayEntry(year, round int, sessionType string) (*replayCacheEntry, error) {
-	rel := filepath.Join("sessions", strconv.Itoa(year), strconv.Itoa(round), sessionType, "replay.json")
-	replayPath := filepath.Join(a.dataDir, rel)
-	replayStat, err := os.Stat(replayPath)
+	if a.store == nil {
+		return nil, errors.New("sqlite store is not configured")
+	}
+	meta, err := a.store.LoadReplayMeta(context.Background(), year, round, sessionType)
 	if err != nil {
 		return nil, err
 	}
-	indexPath := filepath.Join(a.dataDir, "sessions", strconv.Itoa(year), strconv.Itoa(round), sessionType, "replay.index.json")
-
-	index, err := loadReplayIndex(indexPath, replayStat.Size(), replayStat.ModTime().Unix())
-	if err != nil {
-		index, err = buildReplayIndexFromReplay(replayPath, replayStat)
-		if err != nil {
-			return nil, err
-		}
-		if writeErr := writeReplayIndex(indexPath, index); writeErr != nil {
-			log.Printf("warning: failed to write replay sidecar index %s: %v", indexPath, writeErr)
-		}
-	}
-
-	if len(index.Frames) == 0 {
+	if len(meta.Frames) == 0 {
 		return &replayCacheEntry{
-			replayPath: replayPath,
-			frames:     []replayFrameMeta{},
-			sizeBytes:  0,
+			frames:    []replayFrameMeta{},
+			sizeBytes: 0,
 		}, nil
 	}
-
+	frames := make([]replayFrameMeta, 0, len(meta.Frames))
+	for _, f := range meta.Frames {
+		frames = append(frames, replayFrameMeta{
+			FrameSeq:     f.FrameSeq,
+			TimestampMS:  f.TimestampMS,
+			Timestamp:    float64(f.TimestampMS) / 1000.0,
+			Lap:          f.Lap,
+			ChunkSeq:     f.ChunkSeq,
+			FrameInChunk: f.FrameInChunk,
+		})
+	}
 	return &replayCacheEntry{
-		sizeBytes:   estimateReplayIndexBytes(index.Frames, index.QualiPhases),
-		replayPath:  replayPath,
-		frames:      index.Frames,
-		totalLaps:   index.TotalLaps,
-		totalTime:   index.TotalTime,
-		qualiPhases: index.QualiPhases,
+		sessionID:   meta.SessionID,
+		sizeBytes:   estimateReplayIndexBytes(frames, meta.QualiPhases),
+		frames:      frames,
+		totalLaps:   meta.TotalLaps,
+		totalTime:   meta.TotalTime,
+		qualiPhases: meta.QualiPhases,
 	}, nil
 }
 

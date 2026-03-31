@@ -32,10 +32,10 @@ A web app for watching Formula 1 sessions with real timing data, car positions o
 ## Architecture
 
 - **Frontend**: React + Vite with Tailwind CSS, served by Nginx
-- **Backend**: Go web service - serves pre-computed data from local storage
-- **Data Source**: [FastF1](https://github.com/theOehrly/Fast-F1) (used during data processing only)
+- **Backend**: Go web service - serves pre-computed data from SQLite (`/data/f1.db`)
+- **Data Source**: Official F1 timing endpoints (`livetiming.formula1.com`) ingested directly by the Go backend
 
-Session data is processed once and stored locally (or in R2 for remote access). You can either pre-compute data in bulk ahead of time, or let the app process sessions on demand when you select them.
+Session data is processed once and stored in SQLite (`/data/f1.db`). You can queue downloads in the UI, or let the app process sessions on demand when you select them.
 
 ## Self-Hosting Guide
 
@@ -53,7 +53,6 @@ services:
       - DATA_DIR=/data
     volumes:
       - f1data:/data
-      - f1cache:/data/fastf1-cache
 
   frontend:
     image: ghcr.io/adn8naiagent/f1replaytiming-frontend:latest
@@ -64,7 +63,6 @@ services:
 
 volumes:
   f1data:
-  f1cache:
 ```
 
 Then run:
@@ -132,34 +130,24 @@ frontend:
 - `REPLAY_CACHE_MAX_MB` - maximum RAM budget for cached replay sessions in the Go backend (default `256`)
 - `REPLAY_CACHE_TTL_SECONDS` - how long an inactive replay session stays cached after last client disconnect (default `300`)
 - `REPLAY_SAMPLE_INTERVAL_SECONDS` - replay frame sampling interval during precompute (default `0.5`; higher values reduce CPU/RAM during downloads)
+- `SQLITE_PATH` - SQLite database path (default `/data/f1.db`)
+- `SQLITE_BUSY_TIMEOUT_MS` - SQLite lock wait timeout in milliseconds (default `5000`)
+- `REPLAY_CHUNK_FRAMES` - replay protobuf chunk frame count (default `256`)
+- `TELEMETRY_CHUNK_SAMPLES` - telemetry sampling target per lap (default `512`)
+- `PROCESS_CHUNK_CODEC` - chunk codec for replay/telemetry (`protobuf` or `protobuf+zstd`, default `protobuf`)
+- `PROCESS_RAW_MIN_DT_SECONDS` - minimum accepted delta between raw stream samples per driver during ingest (default `0.10`)
 - `GOMEMLIMIT` / `GOGC` - Go runtime GC tuning knobs for tighter memory limits (for example `GOMEMLIMIT=256MiB`, `GOGC=50`)
 
 #### Data
 
 Session data is persisted in a Docker volume, so it survives restarts.
-
-To pre-process session data in bulk (instead of on demand), use the precompute script:
-
-```bash
-# Process a specific race weekend
-docker compose exec backend python data-fetcher/precompute.py 2026 --round 1
-
-# Process only the race session (skip practice/qualifying)
-docker compose exec backend python data-fetcher/precompute.py 2026 --round 1 --session R
-
-# Process an entire season (will take several hours)
-docker compose exec backend python data-fetcher/precompute.py 2025 --skip-existing
-
-# Process multiple years
-docker compose exec backend python data-fetcher/precompute.py 2024 2025 --skip-existing
-```
+Use the Downloads page in the UI to enqueue single sessions, weekends, or full-season ranges for background processing.
 
 ### Option C: Manual setup
 
 #### Prerequisites
 
 - Go 1.26+
-- Python 3.10+
 - Node.js 18+
 
 #### 1. Clone the repository
@@ -175,8 +163,7 @@ cd F1timing
 ```
 PORT=8000
 DATA_DIR=./data
-PY_WORKER_PATH=../data-fetcher/worker_bridge.py
-# PYTHON_BIN=python3
+SQLITE_PATH=./data/f1.db
 
 # Optional - restrict access with a passphrase
 AUTH_ENABLED=false
@@ -200,9 +187,6 @@ AUTH_PASSPHRASE=
 #### 3. Install dependencies and start
 
 ```bash
-# Python data-fetcher dependencies (required for on-demand session processing)
-python3 -m pip install -r data-fetcher/requirements-worker.txt
-
 # Backend (Go API)
 cd backend
 go run .
@@ -221,31 +205,11 @@ There are two ways to get session data into the app:
 
 #### Option A: On-demand processing (recommended for getting started)
 
-Simply select any past session from the homepage. If the data hasn't been processed yet, the app will automatically fetch and process it using FastF1 and start the replay. The first load of a session takes **1-3 minutes**. After that, it's instant.
+Select any past session from the homepage. If the data has not been processed yet, the backend will fetch and process it directly in Go, then store it in SQLite. The first load typically takes **1-3 minutes**.
 
-#### Option B: Bulk pre-compute (recommended for preparing a full season)
+#### Option B: Queue background downloads (recommended for preparing a full season)
 
-Use the CLI script to process sessions ahead of time. This is useful if you want all data ready before you start using the app.
-
-```bash
-# Data fetcher (Python)
-cd data-fetcher
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements-worker.txt
-
-# Process a specific race weekend
-python precompute.py 2026 --round 1
-
-# Process only the race session (skip practice/qualifying)
-python precompute.py 2026 --round 1 --session R
-
-# Process an entire season (will take several hours)
-python precompute.py 2025 --skip-existing
-
-# Process multiple years
-python precompute.py 2024 2025 --skip-existing
-```
+Use the Downloads page to enqueue sessions ahead of time (single session, weekend, or season scopes). The queue runs automatically in the backend.
 
 **Timing estimates:**
 - A single session (e.g. one race) takes **1-3 minutes**
@@ -256,7 +220,7 @@ The app also includes a background task that automatically checks for and proces
 
 ## Acknowledgements
 
-This project is powered by [FastF1](https://github.com/theOehrly/Fast-F1), an open-source Python library for accessing Formula 1 timing and telemetry data. FastF1 is the original inspiration and data source for this project - without it, none of this would be possible.
+Thanks to the broader motorsport telemetry/open-source community and tools that informed earlier iterations of this project.
 
 ## License
 

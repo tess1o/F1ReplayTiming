@@ -30,7 +30,7 @@ export default function FeaturesPage() {
           <h2 className="text-lg font-bold text-white mb-1">Track Map</h2>
           <p className="text-xs font-bold text-f1-red uppercase tracking-wider mb-3">All sessions</p>
           <p className="text-f1-text leading-relaxed">
-            A track map shows car positions derived from GPS telemetry data processed via FastF1,
+            A track map shows car positions derived from GPS telemetry data processed by the Go backend,
             updating every 0.5 seconds with smooth interpolation. Click any driver on the leaderboard
             or map to highlight them. The track orientation matches the conventional broadcast view
             for each circuit. Available in replay mode only.
@@ -400,9 +400,8 @@ export default function FeaturesPage() {
           </p>
           <p className="text-f1-text leading-relaxed mb-3">
             Driver positions on the track map and telemetry data (speed, throttle, brake, gear) are
-            not available in live mode, as track position data requires an authenticated F1 TV
-            subscription. These become available in replay mode once the session is processed via
-            FastF1, typically 1&ndash;2 hours after the chequered flag.
+            not available in live mode. These become available in replay mode once the session is
+            processed after the chequered flag.
           </p>
           <h3 className="text-sm font-bold text-f1-red uppercase tracking-wider mb-2">
             Broadcast delay
