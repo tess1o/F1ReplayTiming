@@ -21,20 +21,43 @@ export function wsUrl(path: string): string {
   return `${base}${path}${tokenParam}`;
 }
 
-export async function apiFetch<T>(path: string): Promise<T> {
-  const headers: HeadersInit = {};
+export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers || {});
   const token = getToken();
   if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+    headers.set("Authorization", `Bearer ${token}`);
   }
-  const res = await fetch(apiUrl(path), { headers });
+  if (init.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  const res = await fetch(apiUrl(path), {
+    ...init,
+    headers,
+  });
   if (res.status === 401) {
     clearToken();
     window.location.reload();
     throw new Error("Unauthorized");
   }
   if (!res.ok) {
-    throw new Error(`API error ${res.status}: ${res.statusText}`);
+    let detail = "";
+    try {
+      detail = (await res.text()).trim();
+    } catch {
+      detail = "";
+    }
+    throw new Error(`API error ${res.status}: ${detail || res.statusText}`);
   }
-  return res.json();
+  if (res.status === 204) {
+    return undefined as T;
+  }
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return res.json();
+  }
+  return (await res.text()) as T;
+}
+
+export async function apiFetch<T>(path: string): Promise<T> {
+  return apiRequest<T>(path);
 }

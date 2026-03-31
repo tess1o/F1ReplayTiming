@@ -44,6 +44,7 @@ type app struct {
 	workerPath      string
 	pythonBin       string
 	replayCache     *replayCache
+	downloads       *downloadManager
 	allowedOrigins  map[string]struct{}
 	authEnabled     bool
 	authPassphrase  string
@@ -144,6 +145,8 @@ func main() {
 		sessionLocks:   make(map[string]*sync.Mutex),
 		scheduleLocks:  make(map[int]*sync.Mutex),
 	}
+	app.downloads = newDownloadManager(app, dataDir)
+	app.downloads.start()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", app.handleHealth)
@@ -159,6 +162,10 @@ func main() {
 	mux.HandleFunc("GET /api/sessions/{year}/{round}/results", app.handleResults)
 	mux.HandleFunc("GET /api/sessions/{year}/{round}/telemetry", app.handleTelemetry)
 	mux.HandleFunc("GET /api/live/status", app.handleLiveStatus)
+	mux.HandleFunc("GET /api/downloads/queue", app.handleDownloadsQueue)
+	mux.HandleFunc("GET /api/downloads/session-status", app.handleDownloadSessionStatus)
+	mux.HandleFunc("POST /api/downloads/enqueue", app.handleDownloadEnqueue)
+	mux.HandleFunc("POST /api/downloads/retry-failed", app.handleDownloadRetryFailed)
 
 	mux.HandleFunc("GET /ws/replay/{year}/{round}", app.handleReplayWebSocket)
 	mux.HandleFunc("GET /ws/live/{year}/{round}", app.handleLiveWebSocket)
@@ -391,13 +398,6 @@ func (a *app) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := a.ensureSessionData(year, round, sessionType, nil); err == nil {
-		if data, err := a.readJSONAny(filepath.Join("sessions", strconv.Itoa(year), strconv.Itoa(round), sessionType, "info.json")); err == nil {
-			writeJSON(w, http.StatusOK, data)
-			return
-		}
-	}
-
 	writeJSON(w, http.StatusNotFound, map[string]any{
 		"detail": fmt.Sprintf("Session data not available for %d Round %d (%s).", year, round, sessionType),
 	})
@@ -430,13 +430,6 @@ func (a *app) handleTrack(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, data)
 				return
 			}
-		}
-	}
-
-	if err := a.ensureSessionData(year, round, sessionType, nil); err == nil {
-		if data, err := a.readJSONAny(filepath.Join("sessions", strconv.Itoa(year), strconv.Itoa(round), sessionType, "track.json")); err == nil {
-			writeJSON(w, http.StatusOK, data)
-			return
 		}
 	}
 
@@ -621,10 +614,21 @@ func (a *app) handleReplayWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	_ = send(map[string]any{"type": "status", "message": "Loading session data..."})
 
-	if err := a.ensureSessionData(year, round, sessionType, func(msg string) {
-		_ = send(map[string]any{"type": "status", "message": msg})
-	}); err != nil {
-		_ = send(map[string]any{"type": "error", "message": "Failed to load session data. The session may not be available yet."})
+	if !a.isSessionDownloaded(year, round, sessionType) {
+		st := a.sessionDownloadStatus(year, round, sessionType)
+		msg := "Session data is not downloaded yet."
+		if st.DownloadState == downloadStateProcessing && strings.TrimSpace(st.Message) != "" {
+			msg = st.Message
+		} else if st.DownloadState == downloadStateQueued {
+			msg = "Session is queued for download."
+		} else if st.DownloadState == downloadStateFailed && strings.TrimSpace(st.LastError) != "" {
+			msg = "Session download failed. Please retry from Downloads."
+		}
+		_ = send(map[string]any{
+			"type":           "error",
+			"message":        msg,
+			"download_state": st.DownloadState,
+		})
 		return
 	}
 
@@ -1040,6 +1044,23 @@ func (a *app) buildEvents(year int) (map[string]any, error) {
 				}
 			}
 			s["available"] = available
+
+			sessionType := normalizeSessionType(asString(s["session_type"]))
+			if sessionType == "" {
+				sessionType = normalizeSessionType(sessionNameToType[asString(s["name"])])
+			}
+			if sessionType != "" {
+				s["session_type"] = sessionType
+				st := a.sessionDownloadStatus(year, asInt(evt["round_number"]), sessionType)
+				s["download_state"] = st.DownloadState
+				s["downloaded"] = st.Downloaded
+				if strings.TrimSpace(st.LastError) != "" {
+					s["last_error"] = st.LastError
+				}
+				if strings.TrimSpace(st.UpdatedAt) != "" {
+					s["updated_at"] = st.UpdatedAt
+				}
+			}
 		}
 		if hasPast {
 			evt["status"] = "available"

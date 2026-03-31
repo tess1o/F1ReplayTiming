@@ -131,6 +131,7 @@ frontend:
 - `AUTH_ENABLED` / `AUTH_PASSPHRASE` - restricts access with a passphrase
 - `REPLAY_CACHE_MAX_MB` - maximum RAM budget for cached replay sessions in the Go backend (default `256`)
 - `REPLAY_CACHE_TTL_SECONDS` - how long an inactive replay session stays cached after last client disconnect (default `300`)
+- `REPLAY_SAMPLE_INTERVAL_SECONDS` - replay frame sampling interval during precompute (default `0.5`; higher values reduce CPU/RAM during downloads)
 - `GOMEMLIMIT` / `GOGC` - Go runtime GC tuning knobs for tighter memory limits (for example `GOMEMLIMIT=256MiB`, `GOGC=50`)
 
 #### Data

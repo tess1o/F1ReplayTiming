@@ -7,8 +7,9 @@ Uses locks to prevent duplicate processing of the same session.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+import resource
+import sys
 import traceback
 
 from services import storage
@@ -17,7 +18,7 @@ from services.f1_data import (
     _get_track_data_sync,
     _get_lap_data_sync,
     _get_race_results_sync,
-    _get_driver_positions_by_time_sync,
+    _iter_driver_positions_by_time_sync,
     _get_driver_telemetry_sync,
 )
 
@@ -27,55 +28,15 @@ logger = logging.getLogger(__name__)
 _locks: dict[str, asyncio.Lock] = {}
 
 
-def _build_replay_sidecar_index(frames: list[dict]) -> dict:
-    """Build byte-offset sidecar index for replay.json written with compact JSON.
-
-    Offsets match storage.put_json serialization:
-    json.dumps(data, separators=(',', ':')).encode()
-    """
-    offsets = []
-    quali_phases = []
-    seen_phases = set()
-    offset = 1  # opening '['
-    total_time = 0.0
-    total_laps = 0
-
-    for i, frame in enumerate(frames):
-        encoded = json.dumps(frame, separators=(",", ":")).encode()
-        start = offset
-        end = start + len(encoded)
-        offsets.append({
-            "start": start,
-            "end": end,
-            "timestamp": float(frame.get("timestamp", 0.0)),
-            "lap": int(frame.get("lap", 0)),
-        })
-        total_time = float(frame.get("timestamp", total_time))
-        total_laps = int(frame.get("total_laps", total_laps))
-
-        qp = frame.get("quali_phase")
-        if isinstance(qp, dict):
-            phase = str(qp.get("phase", "")).strip()
-            if phase and phase not in seen_phases:
-                seen_phases.add(phase)
-                quali_phases.append({
-                    "phase": phase,
-                    "timestamp": float(frame.get("timestamp", 0.0)),
-                })
-
-        offset = end
-        if i < len(frames) - 1:
-            offset += 1  # comma separator
-
-    replay_size = 2 if not frames else offset + 1  # closing ']'
-    return {
-        "version": 1,
-        "frames": offsets,
-        "total_time": total_time,
-        "total_laps": total_laps,
-        "quali_phases": quali_phases,
-        "replay_size": replay_size,
-    }
+def _rss_peak_mb() -> float:
+    try:
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # Linux reports KB; macOS reports bytes.
+        if sys.platform == "darwin":
+            return float(rss) / (1024.0 * 1024.0)
+        return float(rss) / 1024.0
+    except Exception:
+        return 0.0
 
 
 def process_session_sync(
@@ -101,12 +62,16 @@ def process_session_sync(
         if on_status:
             on_status(msg)
 
+    def log_mem(stage: str):
+        logger.info(f"[{prefix}] Peak RSS after {stage}: {_rss_peak_mb():.1f} MB")
+
     status("Loading session data from F1 API...")
 
     # Session info
     try:
         info = _get_session_info_sync(year, round_num, session_type)
         storage.put_json(f"{base}/info.json", info)
+        log_mem("session info")
     except Exception as e:
         logger.error(f"[{prefix}] Failed to get session info: {e}")
         return False
@@ -117,6 +82,7 @@ def process_session_sync(
     try:
         track = _get_track_data_sync(year, round_num, session_type)
         storage.put_json(f"{base}/track.json", track)
+        log_mem("track data")
     except Exception as e:
         logger.warning(f"[{prefix}] No track data: {e}")
 
@@ -127,6 +93,7 @@ def process_session_sync(
     try:
         laps = _get_lap_data_sync(year, round_num, session_type)
         storage.put_json(f"{base}/laps.json", laps)
+        log_mem("lap data")
     except Exception as e:
         logger.warning(f"[{prefix}] No lap data: {e}")
 
@@ -134,21 +101,28 @@ def process_session_sync(
     try:
         results = _get_race_results_sync(year, round_num, session_type)
         storage.put_json(f"{base}/results.json", results)
+        log_mem("results")
     except Exception as e:
         logger.warning(f"[{prefix}] No results: {e}")
 
-    status("Building replay frames (this may take a minute)...")
+    status("Building replay frames (streaming to disk)...")
 
     # Replay frames (the big one)
     try:
-        frames = _get_driver_positions_by_time_sync(year, round_num, session_type)
-        storage.put_json(f"{base}/replay.json", frames)
+        replay_index = storage.put_replay_json_stream(
+            f"{base}/replay.json",
+            _iter_driver_positions_by_time_sync(year, round_num, session_type),
+        )
         try:
-            replay_index = _build_replay_sidecar_index(frames)
-            storage.put_json(f"{base}/replay.index.json", replay_index)
+            if replay_index.get("frames"):
+                replay_index.pop("frame_count", None)
+                storage.put_json(f"{base}/replay.index.json", replay_index)
         except Exception as idx_err:
             logger.warning(f"[{prefix}] Could not build replay sidecar index: {idx_err}")
-        logger.info(f"[{prefix}] Uploaded {len(frames)} replay frames")
+        logger.info(
+            f"[{prefix}] Uploaded {int(replay_index.get('frame_count', 0))} replay frames"
+        )
+        log_mem("replay write")
     except Exception as e:
         logger.warning(f"[{prefix}] No replay data: {e}")
 
@@ -164,19 +138,27 @@ def process_session_sync(
 
         for drv in drivers:
             abbr = drv["abbreviation"]
-            drv_telemetry = {}
-            for lap_num in sorted(total_laps_set):
-                try:
-                    tel = _get_driver_telemetry_sync(
-                        year, round_num, session_type, abbr, lap_num
-                    )
+
+            def iter_driver_laps():
+                for lap_num in sorted(total_laps_set):
+                    try:
+                        tel = _get_driver_telemetry_sync(
+                            year, round_num, session_type, abbr, lap_num
+                        )
+                    except Exception:
+                        continue
                     if tel:
-                        drv_telemetry[str(lap_num)] = tel
-                except Exception:
-                    continue
-            if drv_telemetry:
-                storage.put_json(f"{base}/telemetry/{abbr}.json", drv_telemetry)
+                        yield str(lap_num), tel
+
+            saved_count = storage.put_json_object_items(
+                f"{base}/telemetry/{abbr}.json",
+                iter_driver_laps(),
+            )
+            if saved_count <= 0:
+                continue
+
         logger.info(f"[{prefix}] Uploaded telemetry for {len(drivers)} drivers")
+        log_mem("telemetry")
     except Exception as e:
         logger.warning(f"[{prefix}] Telemetry upload issue: {e}")
 

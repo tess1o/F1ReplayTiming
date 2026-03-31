@@ -2,11 +2,17 @@
 
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useApi } from "@/hooks/useApi";
+import { apiRequest } from "@/lib/api";
 
 interface SessionEntry {
   name: string;
   date_utc: string | null;
   available: boolean;
+  session_type?: string;
+  download_state?: "not_downloaded" | "queued" | "processing" | "downloaded" | "failed";
+  downloaded?: boolean;
+  last_error?: string;
+  updated_at?: string;
 }
 
 interface LiveSessionInfo {
@@ -127,6 +133,9 @@ export default function SessionPicker() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [navigating, setNavigating] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({});
+  const [actionError, setActionError] = useState<string | null>(null);
   useEffect(() => {
     setNavigating(false);
     const handlePageShow = () => setNavigating(false);
@@ -142,10 +151,15 @@ export default function SessionPicker() {
 
   const { data: seasonsData } = useApi<SeasonsResponse>("/api/seasons");
   const { data: eventsData, loading: eventsLoading } = useApi<EventsResponse>(
-    `/api/seasons/${year}/events`,
+    `/api/seasons/${year}/events?_r=${refreshTick}`,
   );
   const { data: liveData } = useApi<{ live: LiveSessionInfo | null }>("/api/live/status");
   const liveSession = liveData?.live || null;
+
+  useEffect(() => {
+    const timer = setInterval(() => setRefreshTick((t) => t + 1), 5000);
+    return () => clearInterval(timer);
+  }, []);
 
   const seasons = (seasonsData?.seasons || []).filter((s) => s <= currentYear);
   const events = eventsData?.events || [];
@@ -170,6 +184,28 @@ export default function SessionPicker() {
   }, [menuOpen]);
 
   // No auto-scroll — let the page load at the top
+
+  async function enqueueSessionDownload(roundNum: number, sessionType: string, key: string) {
+    setActionError(null);
+    setActionBusy((prev) => ({ ...prev, [key]: true }));
+    try {
+      await apiRequest("/api/downloads/enqueue", {
+        method: "POST",
+        body: JSON.stringify({
+          mode: "session",
+          year,
+          round: roundNum,
+          session_type: sessionType,
+        }),
+      });
+      setRefreshTick((t) => t + 1);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to enqueue session download";
+      setActionError(msg);
+    } finally {
+      setActionBusy((prev) => ({ ...prev, [key]: false }));
+    }
+  }
 
   function EventRow({ evt, id }: { evt: Event; id?: string }) {
     const displayEvt = displayEvents.find((e) => e.round_number === evt.round_number) || evt;
@@ -231,6 +267,9 @@ export default function SessionPicker() {
               if (!code) return null;
               const localTime = formatLocalTime(session.date_utc);
               const isLive = liveSession?.year === year && liveSession?.round_number === evt.round_number && liveSession?.session_type === code;
+              const state = session.download_state || (session.downloaded ? "downloaded" : "not_downloaded");
+              const sessionKey = `${year}_${evt.round_number}_${code}`;
+              const isBusy = !!actionBusy[sessionKey];
               if (isLive) {
                 return (
                   <div key={session.name} className="flex flex-col items-center">
@@ -256,7 +295,25 @@ export default function SessionPicker() {
                   </div>
                 );
               }
-              if (session.available) {
+
+              if (!session.available) {
+                return (
+                  <div key={session.name} className="flex flex-col items-center">
+                    {localTime && (
+                      <span className="text-[10px] text-f1-muted/50 mb-1 text-center leading-tight">
+                        {localTime.dayDate}<br />{localTime.time}
+                      </span>
+                    )}
+                    <span
+                      className="px-3 py-1.5 bg-f1-border/40 text-f1-muted/50 text-xs font-bold rounded cursor-not-allowed"
+                    >
+                      {session.name}
+                    </span>
+                  </div>
+                );
+              }
+
+              if (state === "downloaded") {
                 return (
                   <div key={session.name} className="flex flex-col items-center">
                     {localTime && (
@@ -277,18 +334,49 @@ export default function SessionPicker() {
                   </div>
                 );
               }
+
+              if (state === "processing" || state === "queued") {
+                return (
+                  <div key={session.name} className="flex flex-col items-center">
+                    {localTime && (
+                      <span className="text-[10px] text-yellow-300 mb-1 text-center leading-tight">
+                        {localTime.dayDate}<br />{localTime.time}
+                      </span>
+                    )}
+                    <a
+                      href="/downloads"
+                      onClick={(e) => e.stopPropagation()}
+                      className="px-3 py-1.5 bg-yellow-500/20 border border-yellow-500/40 text-yellow-200 text-xs font-bold rounded hover:bg-yellow-500/30 transition-colors"
+                    >
+                      {state === "processing" ? "Processing..." : "Queued"}
+                    </a>
+                  </div>
+                );
+              }
+
               return (
                 <div key={session.name} className="flex flex-col items-center">
                   {localTime && (
-                    <span className="text-[10px] text-f1-muted/50 mb-1 text-center leading-tight">
+                    <span className="text-[10px] text-f1-muted mb-1 text-center leading-tight">
                       {localTime.dayDate}<br />{localTime.time}
                     </span>
                   )}
-                  <span
-                    className="px-3 py-1.5 bg-f1-border/40 text-f1-muted/50 text-xs font-bold rounded cursor-not-allowed"
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void enqueueSessionDownload(evt.round_number, code, sessionKey);
+                    }}
+                    disabled={isBusy}
+                    className={`px-3 py-1.5 text-xs font-bold rounded transition-colors ${
+                      state === "failed"
+                        ? "bg-red-600 text-white hover:bg-red-500"
+                        : "bg-blue-600 text-white hover:bg-blue-500"
+                    } disabled:opacity-50`}
+                    title={session.last_error || ""}
                   >
-                    {session.name}
-                  </span>
+                    {isBusy ? "Queuing..." : state === "failed" ? "Retry" : "Download"}
+                  </button>
                 </div>
               );
             })}
@@ -333,6 +421,12 @@ export default function SessionPicker() {
           >
             About
           </a>
+          <a
+            href="/downloads"
+            className="hidden sm:block px-4 py-2 bg-f1-border text-f1-muted text-sm font-bold rounded hover:text-white transition-colors"
+          >
+            Downloads
+          </a>
           {/* Mobile: hamburger menu */}
           <div className="relative sm:hidden" ref={menuRef}>
             <button
@@ -357,6 +451,12 @@ export default function SessionPicker() {
                 >
                   About
                 </a>
+                <a
+                  href="/downloads"
+                  className="block px-4 py-2.5 text-sm font-bold text-f1-muted hover:text-white hover:bg-white/5 transition-colors"
+                >
+                  Downloads
+                </a>
               </div>
             )}
           </div>
@@ -364,6 +464,11 @@ export default function SessionPicker() {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-8">
+        {actionError && (
+          <div className="max-w-3xl mx-auto mb-4 px-4 py-3 rounded border border-red-500/40 bg-red-500/10 text-red-300 text-sm">
+            {actionError}
+          </div>
+        )}
         {/* Season selector */}
         <div className="flex gap-2 mb-8 flex-wrap max-w-3xl mx-auto">
           {seasons.map((s) => (

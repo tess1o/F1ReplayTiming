@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 import logging
 import threading
 from datetime import datetime, timezone
 from functools import lru_cache
+from typing import Iterator
 
 import fastf1
 from fastf1 import api as f1api
@@ -358,18 +360,22 @@ def _get_lap_data_sync(year: int, round_num: int, session_type: str = "R") -> li
     # FastF1 lap Time is relative to t0_date, so: replay_ts = Time - (min_tel_date - t0_date)
     replay_offset_secs = 0.0
     try:
-        all_dates = []
+        min_date = None
         drivers_list = laps["Driver"].unique().tolist()
         for drv in drivers_list:
             drv_laps = laps.pick_drivers(drv)
             try:
                 tel = drv_laps.get_telemetry()
                 if tel is not None and "Date" in tel.columns and len(tel) > 0:
-                    all_dates.extend(tel["Date"].dropna().tolist())
+                    d = tel["Date"].dropna()
+                    if len(d) == 0:
+                        continue
+                    cur_min = d.min()
+                    if min_date is None or cur_min < min_date:
+                        min_date = cur_min
             except Exception:
                 continue
-        if all_dates and hasattr(session, "t0_date") and session.t0_date is not None:
-            min_date = min(all_dates)
+        if min_date is not None and hasattr(session, "t0_date") and session.t0_date is not None:
             replay_offset_secs = (min_date - session.t0_date).total_seconds()
     except Exception:
         replay_offset_secs = 0.0
@@ -509,9 +515,9 @@ async def get_race_results(year: int, round_num: int, session_type: str = "R") -
     return await asyncio.to_thread(_get_race_results_sync, year, round_num, session_type)
 
 
-def _get_driver_positions_by_time_sync(
+def _iter_driver_positions_by_time_sync(
     year: int, round_num: int, session_type: str = "R"
-) -> list[dict]:
+) -> Iterator[dict]:
     """Build frame-by-frame position data for the replay engine."""
     session = _load_session(year, round_num, session_type)
     laps = session.laps
@@ -519,7 +525,6 @@ def _get_driver_positions_by_time_sync(
     is_race = session_type in ("R", "S")  # Race or Sprint
 
     # Get position data (x, y coords over time) for each driver
-    frames = []
     drivers_list = laps["Driver"].unique().tolist()
 
     # Collect all car position data (merged telemetry has cumulative Distance)
@@ -534,23 +539,37 @@ def _get_driver_positions_by_time_sync(
             continue
 
     if not driver_pos_data:
-        return []
+        return
 
-    # Find common time range
-    all_dates = []
-    for drv, tel in driver_pos_data.items():
-        if "Date" in tel.columns and len(tel) > 0:
-            all_dates.extend(tel["Date"].dropna().tolist())
+    # Find common time range without duplicating all timestamps in a Python list
+    min_date = None
+    max_date = None
+    for tel in driver_pos_data.values():
+        if "Date" not in tel.columns or len(tel) == 0:
+            continue
+        dates = tel["Date"].dropna()
+        if len(dates) == 0:
+            continue
+        cur_min = dates.min()
+        cur_max = dates.max()
+        if min_date is None or cur_min < min_date:
+            min_date = cur_min
+        if max_date is None or cur_max > max_date:
+            max_date = cur_max
 
-    if not all_dates:
-        return []
+    if min_date is None or max_date is None:
+        return
 
-    min_date = min(all_dates)
-    max_date = max(all_dates)
     total_seconds = (max_date - min_date).total_seconds()
 
     # Sample every 0.5 seconds for smooth replay
     sample_interval = 0.5
+    try:
+        sample_interval = float(os.environ.get("REPLAY_SAMPLE_INTERVAL_SECONDS", "0.5"))
+    except (TypeError, ValueError):
+        sample_interval = 0.5
+    if sample_interval < 0.25:
+        sample_interval = 0.25
     num_samples = int(total_seconds / sample_interval)
 
     # Use the same normalization as the track outline (fastest lap)
@@ -563,14 +582,25 @@ def _get_driver_positions_by_time_sync(
         y_min = float(fastest_tel["Y"].min())
         y_max = float(fastest_tel["Y"].max())
     else:
-        # Fallback to all drivers if fastest lap unavailable
-        x_all = []
-        y_all = []
+        # Fallback to all drivers if fastest lap unavailable (without building giant lists)
+        x_min = float("inf")
+        x_max = float("-inf")
+        y_min = float("inf")
+        y_max = float("-inf")
         for tel in driver_pos_data.values():
-            x_all.extend(tel["X"].values.tolist())
-            y_all.extend(tel["Y"].values.tolist())
-        x_min, x_max = min(x_all), max(x_all)
-        y_min, y_max = min(y_all), max(y_all)
+            if "X" not in tel.columns or "Y" not in tel.columns or len(tel) == 0:
+                continue
+            x_col = tel["X"].dropna()
+            y_col = tel["Y"].dropna()
+            if len(x_col) == 0 or len(y_col) == 0:
+                continue
+            x_min = min(x_min, float(x_col.min()))
+            x_max = max(x_max, float(x_col.max()))
+            y_min = min(y_min, float(y_col.min()))
+            y_max = max(y_max, float(y_col.max()))
+        if x_min == float("inf") or y_min == float("inf"):
+            x_min, x_max = 0.0, 1.0
+            y_min, y_max = 0.0, 1.0
 
     scale = max(x_max - x_min, y_max - y_min)
     if scale == 0:
@@ -616,7 +646,14 @@ def _get_driver_positions_by_time_sync(
     if is_race and not grid_positions:
         quali_type = "SQ" if session_type == "S" else "Q"
         try:
-            quali_session = _load_session(year, round_num, quali_type)
+            # Load only session results for grid fallback (avoid full telemetry load).
+            quali_session = fastf1.get_session(year, round_num, quali_type)
+            quali_session.load(
+                telemetry=False,
+                laps=False,
+                weather=False,
+                messages=False,
+            )
             for _, row in quali_session.results.iterrows():
                 q_abbr = str(row.get("Abbreviation", ""))
                 q_pos = row.get("Position")
@@ -1117,15 +1154,15 @@ def _get_driver_positions_by_time_sync(
         times = (tel["Date"] - min_date).dt.total_seconds().values.astype(np.float64)
         sort_idx = np.argsort(times)
         times = times[sort_idx]
-        x_vals = ((tel["X"].values[sort_idx] - x_min) / scale).astype(np.float64)
-        y_vals = ((tel["Y"].values[sort_idx] - y_min) / scale).astype(np.float64)
-        rel_dist = tel["RelativeDistance"].values[sort_idx].astype(np.float64) if "RelativeDistance" in tel.columns else np.zeros(len(times))
-        speed = tel["Speed"].values[sort_idx].astype(np.float64) if "Speed" in tel.columns else np.zeros(len(times))
-        throttle = tel["Throttle"].values[sort_idx].astype(np.float64) if "Throttle" in tel.columns else np.zeros(len(times))
+        x_vals = ((tel["X"].values[sort_idx] - x_min) / scale).astype(np.float32)
+        y_vals = ((tel["Y"].values[sort_idx] - y_min) / scale).astype(np.float32)
+        rel_dist = tel["RelativeDistance"].values[sort_idx].astype(np.float32) if "RelativeDistance" in tel.columns else np.zeros(len(times), dtype=np.float32)
+        speed = tel["Speed"].values[sort_idx].astype(np.float32) if "Speed" in tel.columns else np.zeros(len(times), dtype=np.float32)
+        throttle = tel["Throttle"].values[sort_idx].astype(np.float32) if "Throttle" in tel.columns else np.zeros(len(times), dtype=np.float32)
         brake = tel["Brake"].values[sort_idx] if "Brake" in tel.columns else np.zeros(len(times), dtype=bool)
-        gear = tel["nGear"].values[sort_idx].astype(int) if "nGear" in tel.columns else np.zeros(len(times), dtype=int)
-        rpm = tel["RPM"].values[sort_idx].astype(np.float64) if "RPM" in tel.columns else np.zeros(len(times))
-        drs = tel["DRS"].values[sort_idx].astype(int) if "DRS" in tel.columns else np.zeros(len(times), dtype=int)
+        gear = tel["nGear"].values[sort_idx].astype(np.int8) if "nGear" in tel.columns else np.zeros(len(times), dtype=np.int8)
+        rpm = tel["RPM"].values[sort_idx].astype(np.float32) if "RPM" in tel.columns else np.zeros(len(times), dtype=np.float32)
+        drs = tel["DRS"].values[sort_idx].astype(np.uint8) if "DRS" in tel.columns else np.zeros(len(times), dtype=np.uint8)
         driver_arrays[drv] = {
             "times": times,
             "x": x_vals,
@@ -1138,6 +1175,10 @@ def _get_driver_positions_by_time_sync(
             "rpm": rpm,
             "drs": drs,
         }
+
+    # Release heavy pandas telemetry tables once compact numpy arrays are built.
+    driver_pos_data.clear()
+    gc.collect()
 
     logger.info(f"Pre-processed {len(driver_arrays)} drivers for frame generation, {min(num_samples, 50000)} frames to build")
 
@@ -1250,9 +1291,15 @@ def _get_driver_positions_by_time_sync(
             spd = _safe_float(arrays["speed"][idx])
             thr = _safe_float(arrays["throttle"][idx])
             brk = bool(arrays["brake"][idx])
-            gr = int(arrays["gear"][idx]) if not np.isnan(arrays["gear"][idx]) else 0
+            try:
+                gr = int(arrays["gear"][idx])
+            except Exception:
+                gr = 0
             rpms = _safe_float(arrays["rpm"][idx])
-            drs_val = int(arrays["drs"][idx]) if not np.isnan(arrays["drs"][idx]) else 0
+            try:
+                drs_val = int(arrays["drs"][idx])
+            except Exception:
+                drs_val = 0
 
             gap = _get_gap_to_leader(drv, t_sec) if is_race else None
             interval = _get_interval(drv, t_sec) if is_race else None
@@ -1660,9 +1707,13 @@ def _get_driver_positions_by_time_sync(
             rfe = _get_red_flag_end(i * sample_interval)
             if rfe is not None:
                 frame["red_flag_end"] = round(rfe, 1)
-        frames.append(frame)
+        yield frame
 
-    return frames
+
+def _get_driver_positions_by_time_sync(
+    year: int, round_num: int, session_type: str = "R"
+) -> list[dict]:
+    return list(_iter_driver_positions_by_time_sync(year, round_num, session_type))
 
 
 async def get_driver_positions_by_time(

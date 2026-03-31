@@ -96,12 +96,12 @@ interface ReplayState {
   statusMessage: string | null;
 }
 
-export function useReplaySocket(year: number, round: number, sessionType: string = "R") {
+export function useReplaySocket(year: number, round: number, sessionType: string = "R", enabled: boolean = true) {
   const wsRef = useRef<WebSocket | null>(null);
   const [state, setState] = useState<ReplayState>({
     connected: false,
     ready: false,
-    loading: true,
+    loading: enabled,
     playing: false,
     speed: 1,
     frame: null,
@@ -114,6 +114,41 @@ export function useReplaySocket(year: number, round: number, sessionType: string
   });
 
   useEffect(() => {
+    if (!enabled) {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      setState((s) => ({
+        ...s,
+        connected: false,
+        ready: false,
+        loading: false,
+        frame: null,
+        totalTime: 0,
+        totalLaps: 0,
+        qualiPhases: [],
+        finished: false,
+        error: null,
+        statusMessage: null,
+      }));
+      return;
+    }
+
+    setState((s) => ({
+      ...s,
+      connected: false,
+      ready: false,
+      loading: true,
+      frame: null,
+      totalTime: 0,
+      totalLaps: 0,
+      qualiPhases: [],
+      finished: false,
+      error: null,
+      statusMessage: null,
+    }));
+
     const url = wsUrl(`/ws/replay/${year}/${round}?type=${sessionType}`);
     const ws = new WebSocket(url);
     wsRef.current = ws;
@@ -182,7 +217,7 @@ export function useReplaySocket(year: number, round: number, sessionType: string
     return () => {
       ws.close();
     };
-  }, [year, round, sessionType]);
+  }, [year, round, sessionType, enabled]);
 
   const send = useCallback((msg: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

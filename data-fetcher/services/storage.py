@@ -16,6 +16,7 @@ import logging
 import os
 from pathlib import Path
 from functools import lru_cache
+from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,105 @@ def _local_put_json(path: str, data: object) -> None:
     body = json.dumps(data, separators=(",", ":")).encode()
     filepath.write_bytes(body)
     logger.info(f"Saved {path} ({len(body)} bytes)")
+
+
+def _local_put_replay_json_stream(path: str, frames: Iterable[dict]) -> dict:
+    """Write replay frames as a JSON array incrementally to keep peak RAM low."""
+    filepath = _data_dir() / path
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = filepath.with_suffix(filepath.suffix + ".tmp")
+
+    offsets = []
+    quali_phases = []
+    seen_phases = set()
+    total_time = 0.0
+    total_laps = 0
+    frame_count = 0
+    offset = 1  # opening '['
+
+    with tmp_path.open("wb") as f:
+        f.write(b"[")
+        for frame in frames:
+            encoded = json.dumps(frame, separators=(",", ":")).encode()
+            if frame_count > 0:
+                f.write(b",")
+                offset += 1
+            start = offset
+            f.write(encoded)
+            offset += len(encoded)
+            end = offset
+
+            ts = float(frame.get("timestamp", 0.0))
+            lap = int(frame.get("lap", 0))
+            offsets.append({
+                "start": start,
+                "end": end,
+                "timestamp": ts,
+                "lap": lap,
+            })
+            total_time = ts
+            total_laps = int(frame.get("total_laps", total_laps))
+
+            qp = frame.get("quali_phase")
+            if isinstance(qp, dict):
+                phase = str(qp.get("phase", "")).strip()
+                if phase and phase not in seen_phases:
+                    seen_phases.add(phase)
+                    quali_phases.append({"phase": phase, "timestamp": ts})
+
+            frame_count += 1
+
+        f.write(b"]")
+        replay_size = offset + 1
+
+    tmp_path.replace(filepath)
+    st = filepath.stat()
+    logger.info(f"Saved {path} ({replay_size} bytes)")
+
+    return {
+        "version": 1,
+        "replay_size": replay_size,
+        "replay_mod_unix": int(st.st_mtime),
+        "frames": offsets,
+        "total_time": total_time,
+        "total_laps": total_laps,
+        "quali_phases": quali_phases,
+        "frame_count": frame_count,
+    }
+
+
+def _local_put_json_object_items(path: str, items: Iterable[tuple[str, object]]) -> int:
+    """Write a JSON object incrementally from (key, value) pairs."""
+    filepath = _data_dir() / path
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = filepath.with_suffix(filepath.suffix + ".tmp")
+
+    count = 0
+    with tmp_path.open("wb") as f:
+        f.write(b"{")
+        for key, value in items:
+            if count > 0:
+                f.write(b",")
+            key_encoded = json.dumps(str(key), separators=(",", ":")).encode()
+            value_encoded = json.dumps(value, separators=(",", ":")).encode()
+            f.write(key_encoded)
+            f.write(b":")
+            f.write(value_encoded)
+            count += 1
+        f.write(b"}")
+
+    if count == 0:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except TypeError:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        return 0
+
+    size = tmp_path.stat().st_size
+    tmp_path.replace(filepath)
+    logger.info(f"Saved {path} ({size} bytes)")
+    return count
 
 
 def _local_get_json(path: str) -> object | None:
@@ -155,6 +255,39 @@ def put_json(path: str, data: object) -> None:
         _r2_put_json(path, data)
     else:
         _local_put_json(path, data)
+
+
+def put_replay_json_stream(path: str, frames: Iterable[dict]) -> dict:
+    """Stream replay frames to disk and return sidecar index metadata."""
+    if _mode() == "r2":
+        # R2 mode is not used in the current single-node deployment.
+        # Fall back to materializing frames to preserve compatibility.
+        frame_list = list(frames)
+        put_json(path, frame_list)
+        total_time = float(frame_list[-1].get("timestamp", 0.0)) if frame_list else 0.0
+        total_laps = int(frame_list[-1].get("total_laps", 0)) if frame_list else 0
+        return {
+            "version": 1,
+            "replay_size": 0,
+            "replay_mod_unix": 0,
+            "frames": [],
+            "total_time": total_time,
+            "total_laps": total_laps,
+            "quali_phases": [],
+            "frame_count": len(frame_list),
+        }
+    return _local_put_replay_json_stream(path, frames)
+
+
+def put_json_object_items(path: str, items: Iterable[tuple[str, object]]) -> int:
+    """Stream a JSON object to disk from key/value pairs."""
+    if _mode() == "r2":
+        data = {str(k): v for k, v in items}
+        if not data:
+            return 0
+        put_json(path, data)
+        return len(data)
+    return _local_put_json_object_items(path, items)
 
 
 def get_json(path: str) -> object | None:

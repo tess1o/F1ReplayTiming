@@ -5,6 +5,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import { useApi } from "@/hooks/useApi";
 import { useReplaySocket } from "@/hooks/useReplaySocket";
 import { useSettings } from "@/hooks/useSettings";
+import { apiFetch, apiRequest } from "@/lib/api";
 import SessionBanner from "@/components/SessionBanner";
 import TrackCanvas from "@/components/TrackCanvas";
 import Leaderboard, { type LapEntry } from "@/components/Leaderboard";
@@ -38,6 +39,20 @@ interface SessionData {
     team_name: string;
     team_color: string;
   }>;
+}
+
+interface DownloadStatus {
+  year: number;
+  round: number;
+  session_type: string;
+  download_state: "not_downloaded" | "queued" | "processing" | "downloaded" | "failed";
+  downloaded: boolean;
+  last_error?: string;
+  updated_at?: string;
+  message?: string;
+  queue_position?: number;
+  attempt?: number;
+  max_attempts?: number;
 }
 
 export default function ReplayPage() {
@@ -177,18 +192,101 @@ export default function ReplayPage() {
   }
   const { settings, update: updateSetting } = useSettings();
 
+  const [downloadStatus, setDownloadStatus] = useState<DownloadStatus | null>(null);
+  const [statusLoading, setStatusLoading] = useState(true);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [retryingDownload, setRetryingDownload] = useState(false);
+  const autoEnqueueRef = useRef(false);
+
+  const fetchDownloadStatus = useCallback(async () => {
+    const status = await apiFetch<DownloadStatus>(
+      `/api/downloads/session-status?year=${year}&round=${round}&type=${sessionType}`,
+    );
+    setDownloadStatus(status);
+    setStatusError(null);
+    return status;
+  }, [year, round, sessionType]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setStatusLoading(true);
+    fetchDownloadStatus()
+      .catch((err) => {
+        if (!cancelled) setStatusError(err.message || "Failed to load session status");
+      })
+      .finally(() => {
+        if (!cancelled) setStatusLoading(false);
+      });
+
+    const timer = setInterval(() => {
+      fetchDownloadStatus().catch((err) => {
+        if (!cancelled) setStatusError(err.message || "Failed to load session status");
+      });
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [fetchDownloadStatus]);
+
+  useEffect(() => {
+    if (!downloadStatus || autoEnqueueRef.current) {
+      return;
+    }
+    if (downloadStatus.download_state !== "not_downloaded") {
+      return;
+    }
+    autoEnqueueRef.current = true;
+    apiRequest<{ counts: { enqueued: number } }>("/api/downloads/enqueue", {
+      method: "POST",
+      body: JSON.stringify({
+        mode: "session",
+        year,
+        round,
+        session_type: sessionType,
+      }),
+    })
+      .then(() => fetchDownloadStatus())
+      .catch((err) => setStatusError(err.message || "Failed to queue session download"));
+  }, [downloadStatus, fetchDownloadStatus, round, sessionType, year]);
+
+  const retryDownload = useCallback(async () => {
+    setRetryingDownload(true);
+    try {
+      await apiRequest("/api/downloads/enqueue", {
+        method: "POST",
+        body: JSON.stringify({
+          mode: "session",
+          year,
+          round,
+          session_type: sessionType,
+        }),
+      });
+      await fetchDownloadStatus();
+      setStatusError(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to retry download";
+      setStatusError(msg);
+    } finally {
+      setRetryingDownload(false);
+    }
+  }, [fetchDownloadStatus, round, sessionType, year]);
+
+  const downloaded = downloadStatus?.downloaded === true;
+
   const { data: sessionData, loading: sessionLoading, error: sessionError } = useApi<SessionData>(
-    `/api/sessions/${year}/${round}?type=${sessionType}`,
+    downloaded ? `/api/sessions/${year}/${round}?type=${sessionType}` : null,
   );
 
   const { data: trackData, loading: trackLoading, error: trackError } = useApi<TrackData>(
-    `/api/sessions/${year}/${round}/track?type=${sessionType}`,
+    downloaded ? `/api/sessions/${year}/${round}/track?type=${sessionType}` : null,
   );
 
   // Fetch lap data for last lap time column (race/sprint only)
   // Fetch lap data for last lap time column (all session types)
   const { data: lapsResponse } = useApi<{ laps: LapEntry[] }>(
-    `/api/sessions/${year}/${round}/laps?type=${sessionType}`,
+    downloaded ? `/api/sessions/${year}/${round}/laps?type=${sessionType}` : null,
   );
 
   // Build lookup: driver -> lap_number -> lap_time
@@ -207,7 +305,7 @@ export default function ReplayPage() {
     return map;
   }, [lapsResponse]);
 
-  const replay = useReplaySocket(year, round, sessionType);
+  const replay = useReplaySocket(year, round, sessionType, downloaded);
 
   // RC sound notification
   const lastRcCountRef = useRef(0);
@@ -253,8 +351,78 @@ export default function ReplayPage() {
     }
   }, [settings.showAllPanels]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isLoading = sessionLoading || trackLoading;
+  const isLoading = downloaded && (sessionLoading || trackLoading);
   const dataError = sessionError || trackError;
+
+  if (statusLoading && !downloadStatus) {
+    return (
+      <div className="min-h-screen bg-f1-dark flex items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block w-12 h-12 border-[3px] border-f1-muted border-t-f1-red rounded-full animate-spin mb-6" />
+          <p className="text-white text-lg font-bold">Checking session status...</p>
+          <p className="text-f1-muted text-sm mt-2">Preparing download state</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!downloaded) {
+    const state = downloadStatus?.download_state || "not_downloaded";
+    const statusText = (() => {
+      if (state === "processing") return downloadStatus?.message || "Processing session data...";
+      if (state === "queued") {
+        const pos = downloadStatus?.queue_position;
+        return pos ? `Queued for download (position ${pos})` : "Queued for download";
+      }
+      if (state === "failed") return "Session download failed";
+      return "Queuing session download...";
+    })();
+    const details = (() => {
+      if (state === "processing") {
+        const a = downloadStatus?.attempt || 0;
+        const m = downloadStatus?.max_attempts || 0;
+        if (a > 0 && m > 0) return `Attempt ${a} of ${m}. First processing can take a few minutes.`;
+        return "First processing can take a few minutes.";
+      }
+      if (state === "queued") return "The backend is processing jobs in FIFO order.";
+      if (state === "failed") return downloadStatus?.last_error || "Please retry download.";
+      return "This session will start automatically when data is ready.";
+    })();
+
+    return (
+      <div className="min-h-screen bg-f1-dark flex items-center justify-center px-4">
+        <div className="text-center max-w-xl">
+          <div className="inline-block w-12 h-12 border-[3px] border-f1-muted border-t-f1-red rounded-full animate-spin mb-6" />
+          <p className="text-white text-xl font-bold mb-2">{statusText}</p>
+          <p className="text-f1-muted text-sm mb-2">{details}</p>
+          {statusError && <p className="text-red-400 text-sm mb-4">{statusError}</p>}
+          <div className="flex items-center justify-center gap-3 mt-6">
+            {state === "failed" && (
+              <button
+                onClick={retryDownload}
+                disabled={retryingDownload}
+                className="px-4 py-2 bg-f1-red text-white font-bold text-sm rounded hover:bg-red-700 transition-colors disabled:opacity-50"
+              >
+                {retryingDownload ? "Retrying..." : "Retry Download"}
+              </button>
+            )}
+            <a
+              href="/downloads"
+              className="px-4 py-2 bg-f1-border text-white font-bold text-sm rounded hover:bg-white/15 transition-colors"
+            >
+              Open Downloads
+            </a>
+            <a
+              href="/"
+              className="px-4 py-2 bg-f1-border text-white font-bold text-sm rounded hover:bg-white/15 transition-colors"
+            >
+              Back
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Show loading until session + track + replay frames are all ready
   if (isLoading || (!dataError && replay.loading)) {
