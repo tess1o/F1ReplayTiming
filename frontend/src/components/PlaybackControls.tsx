@@ -28,7 +28,6 @@ interface Props {
   onReset: () => void;
   onSeekToLap?: (lap: number) => void;
   isRace?: boolean;
-  onSyncPhoto?: () => void;
   onPiP?: () => void;
   pipActive?: boolean;
   onFullscreen?: () => void;
@@ -53,7 +52,6 @@ export default function PlaybackControls({
   onReset,
   onSeekToLap,
   isRace,
-  onSyncPhoto,
   onPiP,
   pipActive,
   onFullscreen,
@@ -219,14 +217,6 @@ export default function PlaybackControls({
           {/* Race: Sync + Lap selector */}
           {isRace && (
             <div className="flex items-center justify-center gap-3">
-              {onSyncPhoto && (
-                <button
-                  onClick={onSyncPhoto}
-                  className="px-3 py-1.5 rounded border border-f1-border hover:bg-white/10 transition-colors text-f1-muted hover:text-white text-xs font-bold"
-                >
-                  Sync
-                </button>
-              )}
               {onSeekToLap && (
                 <div className="flex items-center gap-1">
                   <span className="text-xs font-extrabold text-white">Lap</span>
@@ -335,15 +325,6 @@ export default function PlaybackControls({
               <span className="text-sm font-extrabold text-white ml-auto tabular-nums">
                 {formatTime(currentTime)}{showSessionTime && ` / ${formatTime(totalTime)}`}
               </span>
-
-              {onSyncPhoto && (
-                <button
-                  onClick={onSyncPhoto}
-                  className="px-3 py-1.5 rounded border border-f1-border hover:bg-white/10 transition-colors text-f1-muted hover:text-white text-xs font-bold"
-                >
-                  Sync
-                </button>
-              )}
 
               <div className="flex items-center gap-1">
                 <span className="text-sm font-extrabold text-white">Lap</span>

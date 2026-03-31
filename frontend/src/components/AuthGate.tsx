@@ -13,6 +13,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const apiTarget = API_URL || "same-origin proxy (/api and /ws)";
 
   const checkAuth = useCallback(() => {
     setChecking(true);
@@ -60,11 +61,11 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
         }
       })
       .catch((err) => {
-        console.error(`[AuthGate] Cannot connect to backend at ${API_URL}:`, err.message);
+        console.error(`[AuthGate] Cannot connect to backend via ${apiTarget}:`, err.message);
         setConnectionError(true);
         setChecking(false);
       });
-  }, []);
+  }, [apiTarget]);
 
   useEffect(() => {
     checkAuth();
@@ -122,21 +123,29 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
               The frontend failed to reach the API server at:
             </p>
             <code className="block text-xs text-white bg-f1-dark border border-f1-border rounded px-3 py-2 mb-4 break-all">
-              {API_URL}
+              {apiTarget}
             </code>
             <div className="text-xs text-f1-muted space-y-2">
               <p>Common causes:</p>
               <ul className="list-disc list-inside space-y-1 ml-1">
                 <li>The backend container is still starting up</li>
-                <li>
-                  <code className="text-white">NEXT_PUBLIC_API_URL</code> in your
-                  docker-compose.yml is set to a URL that isn&apos;t reachable from
-                  your browser
-                </li>
-                <li>
-                  If behind a reverse proxy, this URL must be the address your browser
-                  uses to reach the backend, not an internal Docker address
-                </li>
+                {API_URL ? (
+                  <>
+                    <li>
+                      <code className="text-white">NEXT_PUBLIC_API_URL</code> is set to a
+                      URL that isn&apos;t reachable from your browser
+                    </li>
+                    <li>
+                      For reverse proxies, this URL must be browser-reachable (not an
+                      internal Docker hostname like <code className="text-white">backend</code>)
+                    </li>
+                  </>
+                ) : (
+                  <li>
+                    The frontend proxy cannot reach the backend container
+                    (<code className="text-white">backend:8000</code>)
+                  </li>
+                )}
               </ul>
             </div>
             <button

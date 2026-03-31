@@ -9,7 +9,7 @@ https://github.com/user-attachments/assets/952b8634-2470-46d9-96e2-67a820459a49
 
 > **Disclaimer:** This project is intended for **personal, non-commercial use only**. This website is unofficial and is not associated in any way with the Formula 1 companies. F1, FORMULA ONE, FORMULA 1, FIA FORMULA ONE WORLD CHAMPIONSHIP, GRAND PRIX and related marks are trade marks of Formula One Licensing B.V.
 
-A web app for watching Formula 1 sessions with real timing data, car positions on track, driver telemetry, and more - both live during race weekends and as replays of past sessions. Built with Next.js and FastAPI.
+A web app for watching Formula 1 sessions with real timing data, car positions on track, driver telemetry, and more - both live during race weekends and as replays of past sessions. Built with Next.js and a Go backend.
 
 ## Features
 
@@ -21,7 +21,6 @@ A web app for watching Formula 1 sessions with real timing data, car positions o
 - **Telemetry** for unlimited drivers showing speed, throttle, brake, gear, and DRS (2025 and earlier) plotted against track distance, with a moveable side panel for 3+ driver comparisons
 - **Lap Analysis** (Beta) compare lap times for up to two drivers with a line chart and lap-by-lap history, with pit stop and safety car periods highlighted. Race replay only
 - **Picture-in-Picture** mode for a compact floating window with track map, race control, leaderboard, and telemetry
-- **Broadcast sync** - match the replay to a recording of a session, either by uploading a screenshot of the timing tower (using AI vision) or by manually entering gap times
 - **Weather data** including air and track temperature, humidity, wind, and rainfall status
 - **Track status flags** for green, yellow, Safety Car, Virtual Safety Car, and red flag conditions
 - **Playback controls** with 0.5x to 20x speed, skip buttons (5s, 30s, 1m, 5m), lap jumping, a progress bar, and red flag countdown with skip-to-restart
@@ -33,7 +32,7 @@ A web app for watching Formula 1 sessions with real timing data, car positions o
 ## Architecture
 
 - **Frontend**: Next.js (React) with Tailwind CSS
-- **Backend**: FastAPI (Python) - serves pre-computed data from local storage or Cloudflare R2
+- **Backend**: Go web service - serves pre-computed data from local storage
 - **Data Source**: [FastF1](https://github.com/theOehrly/Fast-F1) (used during data processing only)
 
 Session data is processed once and stored locally (or in R2 for remote access). You can either pre-compute data in bulk ahead of time, or let the app process sessions on demand when you select them.
@@ -50,10 +49,7 @@ Create a `docker-compose.yml` file:
 services:
   backend:
     image: ghcr.io/adn8naiagent/f1replaytiming-backend:latest
-    ports:
-      - "8000:8000"
     environment:
-      - FRONTEND_URL=http://localhost:3000
       - DATA_DIR=/data
     volumes:
       - f1data:/data
@@ -63,8 +59,6 @@ services:
     image: ghcr.io/adn8naiagent/f1replaytiming-frontend:latest
     ports:
       - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000  # Change to your backend URL if not using localhost
     depends_on:
       - backend
 
@@ -76,7 +70,7 @@ volumes:
 Then run:
 
 ```bash
-docker compose up
+docker compose up -d
 ```
 
 Open http://localhost:3000. Select any past session and it will be processed on demand.
@@ -88,7 +82,7 @@ If you prefer to build the images yourself, or want to make changes to the code:
 ```bash
 git clone <repo-url>
 cd F1timing
-docker compose up
+docker compose up -d
 ```
 
 Open http://localhost:3000. Select any past session and it will be processed on demand.
@@ -97,27 +91,22 @@ Open http://localhost:3000. Select any past session and it will be processed on 
 
 #### Network & URL configuration
 
-Two environment variables control how the frontend and backend find each other:
+By default, the frontend proxies `/api` and `/ws` to the backend container internally. This means you usually do **not** need any frontend/backend URL variables for Docker Compose.
+
+This default works for:
+- localhost access
+- access from other devices on your LAN (for example `http://192.168.1.50:3000`)
+- single-domain reverse proxy setups where the same host serves frontend and forwards `/api` + `/ws`
+
+For advanced split-domain deployments (frontend and API on different public domains), use:
 
 | Variable | Set on | Purpose |
 |---|---|---|
-| `NEXT_PUBLIC_API_URL` | frontend | The URL your **browser** uses to reach the backend |
-| `FRONTEND_URL` | backend | The URL your browser uses to reach the frontend (needed for CORS) |
+| `NEXT_PUBLIC_API_URL` | frontend | Optional absolute backend URL used by the browser (for split-domain mode) |
+| `FRONTEND_URL` | backend | Optional allowed frontend origin for CORS |
+| `EXTRA_ORIGINS` | backend | Optional comma-separated additional CORS origins |
 
-The defaults (`http://localhost:8000` and `http://localhost:3000`) work when accessing the app on the same machine running Docker. If you access from another device, use a reverse proxy, or change ports, update both variables to match.
-
-**Example — accessing from other devices on your network:**
-```yaml
-backend:
-  environment:
-    - FRONTEND_URL=http://192.168.1.50:3000
-
-frontend:
-  environment:
-    - NEXT_PUBLIC_API_URL=http://192.168.1.50:8000
-```
-
-**Example — behind a reverse proxy (e.g. Cloudflare Tunnel, nginx):**
+**Example — split domains (`f1.example.com` + `api.f1.example.com`):**
 ```yaml
 backend:
   environment:
@@ -128,12 +117,12 @@ frontend:
     - NEXT_PUBLIC_API_URL=https://api.f1.example.com
 ```
 
-In this setup your reverse proxy routes `f1.example.com` to the frontend container (port 3000) and `api.f1.example.com` to the backend container (port 8000).
-
 #### Optional features
 
-- `OPENROUTER_API_KEY` - enables the photo sync feature ([get a key](https://openrouter.ai/))
 - `AUTH_ENABLED` / `AUTH_PASSPHRASE` - restricts access with a passphrase
+- `REPLAY_CACHE_MAX_MB` - maximum RAM budget for cached replay sessions in the Go backend (default `256`)
+- `REPLAY_CACHE_TTL_SECONDS` - how long an inactive replay session stays cached after last client disconnect (default `300`)
+- `GOMEMLIMIT` / `GOGC` - Go runtime GC tuning knobs for tighter memory limits (for example `GOMEMLIMIT=256MiB`, `GOGC=50`)
 
 #### Data
 
@@ -161,7 +150,6 @@ docker compose exec backend python precompute.py 2024 2025 --skip-existing
 
 - Python 3.10+
 - Node.js 18+
-- An [OpenRouter](https://openrouter.ai/) API key (optional, enables photo/screenshot sync - manual entry sync works without this)
 
 #### 1. Clone the repository
 
@@ -174,22 +162,23 @@ cd F1timing
 
 **Backend** (`backend/.env`):
 ```
-FRONTEND_URL=http://localhost:3000
 PORT=8000
 DATA_DIR=./data
-
-# Optional - enables photo/screenshot sync (manual entry sync works without this)
-# Get a key from https://openrouter.ai/
-OPENROUTER_API_KEY=
 
 # Optional - restrict access with a passphrase
 AUTH_ENABLED=false
 AUTH_PASSPHRASE=
+
+# Optional - needed only when frontend is on a different origin/domain (CORS)
+# FRONTEND_URL=http://localhost:3000
+# EXTRA_ORIGINS=
 ```
 
 **Frontend** (`frontend/.env`):
 ```
-NEXT_PUBLIC_API_URL=http://localhost:8000
+# Optional - needed only for split-domain deployments.
+# By default frontend uses same-origin proxy (/api and /ws).
+# NEXT_PUBLIC_API_URL=https://api.example.com
 ```
 
 
@@ -246,10 +235,6 @@ python precompute.py 2024 2025 --skip-existing
 - A complete season (~24 rounds, all sessions) takes **2-3 hours**
 
 The app also includes a background task that automatically checks for and processes new session data on race weekends (Friday–Monday).
-
-#### Photo Sync Feature
-
-The broadcast sync feature lets you match the replay to a recording of a session. You can always sync manually by entering gap times directly. To also enable photo/screenshot sync (where the app reads the timing tower from an image), set an [OpenRouter](https://openrouter.ai/) API key as `OPENROUTER_API_KEY`. It uses a vision model (Gemini Flash) to read the leaderboard from the photo. Any OpenRouter-compatible API key will work.
 
 ## Acknowledgements
 

@@ -1,11 +1,14 @@
 services:
   backend:
-    build: ./backend
-    ports:
-      - "8000:8000"  # Change the left side to use a different host port
+    build:
+      context: .
+      dockerfile: backend-go/Dockerfile
     environment:
-      - FRONTEND_URL=http://localhost:3000  # The URL your browser uses to access the frontend (for CORS)
       - DATA_DIR=/data
+      - REPLAY_CACHE_MAX_MB=64
+      - REPLAY_CACHE_TTL_SECONDS=45
+      - GOMEMLIMIT=192MiB
+      - GOGC=30
       # Optional - uncomment to enable features
       # - OPENROUTER_API_KEY=your-key-here  # enables photo/screenshot sync (manual entry sync works without this)
       # - AUTH_ENABLED=true
@@ -18,8 +21,6 @@ services:
     build: ./frontend
     ports:
       - "3000:3000"  # Change the left side to use a different host port
-    environment:
-     - NEXT_PUBLIC_API_URL=http://localhost:8000 # The URL your browser uses to reach the backend 
     depends_on:
       - backend
 

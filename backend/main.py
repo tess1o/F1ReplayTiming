@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from auth import is_auth_enabled, verify_token
-from routers import sessions, track, laps, results, replay, telemetry, sync, live, live_status
+from routers import sessions, track, laps, results, replay, telemetry, live, live_status
 from routers import auth_routes
 from services.auto_precompute import auto_precompute_loop
 
@@ -41,9 +41,17 @@ app = FastAPI(
 )
 
 # CORS
-frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+frontend_url = os.environ.get("FRONTEND_URL", "").strip()
 extra_origins = [o.strip() for o in os.environ.get("EXTRA_ORIGINS", "").split(",") if o.strip()]
-allowed_origins = [frontend_url, "http://localhost:3000", "http://localhost:3001"] + extra_origins
+allowed_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+]
+if frontend_url:
+    allowed_origins.insert(0, frontend_url)
+allowed_origins.extend(extra_origins)
 # Ensure https variants are included for Railway/production URLs
 for origin in list(allowed_origins):
     if origin.startswith("https://"):
@@ -54,6 +62,7 @@ for origin in list(allowed_origins):
         https_variant = "https://" + origin[7:]
         if https_variant not in allowed_origins:
             allowed_origins.append(https_variant)
+allowed_origins = list(dict.fromkeys(allowed_origins))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -92,7 +101,6 @@ app.include_router(laps.router)
 app.include_router(results.router)
 app.include_router(replay.router)
 app.include_router(telemetry.router)
-app.include_router(sync.router)
 app.include_router(live.router)
 app.include_router(live_status.router)
 

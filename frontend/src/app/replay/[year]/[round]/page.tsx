@@ -10,7 +10,6 @@ import TrackCanvas from "@/components/TrackCanvas";
 import Leaderboard, { type LapEntry } from "@/components/Leaderboard";
 import PlaybackControls from "@/components/PlaybackControls";
 import TelemetryChart from "@/components/TelemetryChart";
-import SyncPhoto from "@/components/SyncPhoto";
 import PiPWindow from "@/components/PiPWindow";
 import LapAnalysisPanel from "@/components/LapAnalysisPanel";
 import type { SectorOverlay } from "@/lib/trackRenderer";
@@ -51,7 +50,6 @@ export default function ReplayPage() {
   const [selectedDrivers, setSelectedDrivers] = useState<string[]>([]);
   const [showTelemetry, setShowTelemetry] = useState(false);
   const [telemetryPosition, setTelemetryPosition] = useState<"left" | "bottom">("left");
-  const [showSyncPhoto, setShowSyncPhoto] = useState(false);
   const [pipActive, setPipActive] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -945,7 +943,6 @@ export default function ReplayPage() {
         onSeekToLap={replay.seekToLap}
         onReset={replay.reset}
         isRace={isRace}
-        onSyncPhoto={() => setShowSyncPhoto(true)}
         onPiP={!isMobile && !isIOS ? () => setPipActive(true) : undefined}
         pipActive={pipActive}
         onFullscreen={!isMobile ? () => {
@@ -1139,16 +1136,6 @@ export default function ReplayPage() {
         </PiPWindow>
       )}
 
-      {/* Sync with photo modal */}
-      {showSyncPhoto && (
-        <SyncPhoto
-          year={year}
-          round={round}
-          sessionType={sessionType}
-          onSync={(timestamp) => replay.seek(timestamp)}
-          onClose={() => setShowSyncPhoto(false)}
-        />
-      )}
     </div>
   );
 }

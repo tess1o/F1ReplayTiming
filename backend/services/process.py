@@ -7,6 +7,7 @@ Uses locks to prevent duplicate processing of the same session.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import traceback
 
@@ -24,6 +25,57 @@ logger = logging.getLogger(__name__)
 
 # Locks to prevent duplicate processing of the same session
 _locks: dict[str, asyncio.Lock] = {}
+
+
+def _build_replay_sidecar_index(frames: list[dict]) -> dict:
+    """Build byte-offset sidecar index for replay.json written with compact JSON.
+
+    Offsets match storage.put_json serialization:
+    json.dumps(data, separators=(',', ':')).encode()
+    """
+    offsets = []
+    quali_phases = []
+    seen_phases = set()
+    offset = 1  # opening '['
+    total_time = 0.0
+    total_laps = 0
+
+    for i, frame in enumerate(frames):
+        encoded = json.dumps(frame, separators=(",", ":")).encode()
+        start = offset
+        end = start + len(encoded)
+        offsets.append({
+            "start": start,
+            "end": end,
+            "timestamp": float(frame.get("timestamp", 0.0)),
+            "lap": int(frame.get("lap", 0)),
+        })
+        total_time = float(frame.get("timestamp", total_time))
+        total_laps = int(frame.get("total_laps", total_laps))
+
+        qp = frame.get("quali_phase")
+        if isinstance(qp, dict):
+            phase = str(qp.get("phase", "")).strip()
+            if phase and phase not in seen_phases:
+                seen_phases.add(phase)
+                quali_phases.append({
+                    "phase": phase,
+                    "timestamp": float(frame.get("timestamp", 0.0)),
+                })
+
+        offset = end
+        if i < len(frames) - 1:
+            offset += 1  # comma separator
+
+    replay_size = 2 if not frames else offset + 1  # closing ']'
+    return {
+        "version": 1,
+        "frames": offsets,
+        "total_time": total_time,
+        "total_laps": total_laps,
+        "quali_phases": quali_phases,
+        "replay_size": replay_size,
+    }
 
 
 def process_session_sync(
@@ -91,6 +143,11 @@ def process_session_sync(
     try:
         frames = _get_driver_positions_by_time_sync(year, round_num, session_type)
         storage.put_json(f"{base}/replay.json", frames)
+        try:
+            replay_index = _build_replay_sidecar_index(frames)
+            storage.put_json(f"{base}/replay.index.json", replay_index)
+        except Exception as idx_err:
+            logger.warning(f"[{prefix}] Could not build replay sidecar index: {idx_err}")
         logger.info(f"[{prefix}] Uploaded {len(frames)} replay frames")
     except Exception as e:
         logger.warning(f"[{prefix}] No replay data: {e}")

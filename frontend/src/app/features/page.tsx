@@ -311,33 +311,6 @@ export default function FeaturesPage() {
           </p>
         </section>
 
-        {/* Broadcast Sync */}
-        <section className="bg-f1-card border border-f1-border rounded-xl p-6">
-          <h2 className="text-lg font-bold text-white mb-1">Broadcast Sync</h2>
-          <p className="text-xs font-bold text-f1-red uppercase tracking-wider mb-3">All sessions</p>
-          <p className="text-f1-text leading-relaxed mb-3">
-            Sync the replay to a live broadcast or recording so the timing data matches what&apos;s on screen.
-            There are two sync methods:
-          </p>
-          <div className="space-y-4">
-            <div>
-              <h3 className="text-sm font-bold text-white mb-1">Photo Sync</h3>
-              <p className="text-sm text-f1-text leading-relaxed">
-                Take a screenshot of the broadcast showing the leaderboard, then upload it. A vision model
-                reads the driver positions and gap times from the image and finds the matching point in the
-                replay data, automatically jumping to the correct moment.
-              </p>
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-white mb-1">Manual Sync</h3>
-              <p className="text-sm text-f1-text leading-relaxed">
-                Enter the gap times for the top two drivers as shown on the broadcast. The replay searches
-                for the closest matching frame based on those gaps and syncs to it.
-              </p>
-            </div>
-          </div>
-        </section>
-
         {/* Telemetry */}
         <section className="bg-f1-card border border-f1-border rounded-xl p-6">
           <h2 className="text-lg font-bold text-white mb-1">Telemetry</h2>
