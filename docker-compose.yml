@@ -1,8 +1,9 @@
 services:
-  backend:
+  f1-backend:
+    container_name: f1-backend
     build:
       context: .
-      dockerfile: backend-go/Dockerfile
+      dockerfile: backend/Dockerfile
     environment:
       - DATA_DIR=/data
       - REPLAY_CACHE_MAX_MB=64
@@ -10,19 +11,27 @@ services:
       - GOMEMLIMIT=192MiB
       - GOGC=30
       # Optional - uncomment to enable features
-      # - OPENROUTER_API_KEY=your-key-here  # enables photo/screenshot sync (manual entry sync works without this)
       # - AUTH_ENABLED=true
       # - AUTH_PASSPHRASE=your-passphrase
+      # Enable only when frontend calls backend directly (cross-origin)
+      # - FRONTEND_URL=http://localhost:3000
+      # - EXTRA_ORIGINS=https://f1.example.com
     volumes:
       - f1data:/data
       - f1cache:/data/fastf1-cache
 
-  frontend:
+  f1-frontend:
     build: ./frontend
+    container_name: f1-frontend
+    #environment:
+      # Optional runtime override for proxy upstream (/api + /ws)
+      # - BACKEND_INTERNAL_URL=http://backend:8000
+      # Optional: browser talks to backend directly (requires backend CORS)
+      # - NEXT_PUBLIC_API_URL=https://api.f1.example.com
     ports:
       - "3000:3000"  # Change the left side to use a different host port
     depends_on:
-      - backend
+      - f1-backend
 
 volumes:
   f1data:

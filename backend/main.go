@@ -108,12 +108,12 @@ func main() {
 
 	dataDir := strings.TrimSpace(os.Getenv("DATA_DIR"))
 	if dataDir == "" {
-		dataDir = filepath.Clean(filepath.Join("..", "backend", "data"))
+		dataDir = filepath.Clean(filepath.Join("..", "data-fetcher", "data"))
 	}
 
 	workerPath := strings.TrimSpace(os.Getenv("PY_WORKER_PATH"))
 	if workerPath == "" {
-		workerPath = filepath.Clean(filepath.Join("..", "backend", "worker_bridge.py"))
+		workerPath = filepath.Clean(filepath.Join("..", "data-fetcher", "worker_bridge.py"))
 	}
 	pythonBin := strings.TrimSpace(os.Getenv("PYTHON_BIN"))
 	if pythonBin == "" {
@@ -201,11 +201,14 @@ func (a *app) withMiddleware(next http.Handler) http.Handler {
 }
 
 func (a *app) applyCORS(w http.ResponseWriter, r *http.Request) {
+	if len(a.allowedOrigins) == 0 {
+		return
+	}
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
 		return
 	}
-	if _, ok := a.allowedOrigins[origin]; !ok {
+	if !a.isAllowedOrigin(origin) {
 		return
 	}
 	w.Header().Set("Access-Control-Allow-Origin", origin)
@@ -215,14 +218,9 @@ func (a *app) applyCORS(w http.ResponseWriter, r *http.Request) {
 }
 
 func buildAllowedOrigins() map[string]struct{} {
-	origins := []string{
-		"http://localhost:3000",
-		"http://localhost:3001",
-		"http://127.0.0.1:3000",
-		"http://127.0.0.1:3001",
-	}
+	var origins []string
 	if o := strings.TrimSpace(os.Getenv("FRONTEND_URL")); o != "" {
-		origins = append([]string{o}, origins...)
+		origins = append(origins, o)
 	}
 	if extra := strings.TrimSpace(os.Getenv("EXTRA_ORIGINS")); extra != "" {
 		for _, o := range strings.Split(extra, ",") {
@@ -244,6 +242,27 @@ func buildAllowedOrigins() map[string]struct{} {
 		out[o] = struct{}{}
 	}
 	return out
+}
+
+func (a *app) isAllowedOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	_, ok := a.allowedOrigins[origin]
+	return ok
+}
+
+func (a *app) wsOriginAllowed(r *http.Request) bool {
+	// In same-origin proxy deployments, CORS is not needed and WS requests may be
+	// forwarded without explicit origin allow-list config.
+	if len(a.allowedOrigins) == 0 {
+		return true
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	return a.isAllowedOrigin(origin)
 }
 
 func isTrue(v string) bool {
@@ -572,10 +591,6 @@ func (a *app) handleLiveStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"live": nil})
 }
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(_ *http.Request) bool { return true },
-}
-
 func (a *app) handleReplayWebSocket(w http.ResponseWriter, r *http.Request) {
 	if !a.checkWSAuth(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -590,6 +605,9 @@ func (a *app) handleReplayWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionType := strings.ToUpper(defaultString(r.URL.Query().Get("type"), "R"))
 
+	upgrader := websocket.Upgrader{
+		CheckOrigin: a.wsOriginAllowed,
+	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -803,6 +821,9 @@ func (a *app) handleLiveWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	speed := defaultString(r.URL.Query().Get("speed"), "10")
 
+	upgrader := websocket.Upgrader{
+		CheckOrigin: a.wsOriginAllowed,
+	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return

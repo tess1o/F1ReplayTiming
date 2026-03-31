@@ -1,4 +1,4 @@
-module f1replaytiming/backend-go
+module f1replaytiming/backend
 
 go 1.26.0
 

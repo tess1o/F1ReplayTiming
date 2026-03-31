@@ -32,7 +32,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Ensure backend modules are importable
+# Ensure local data-fetcher modules are importable
 sys.path.insert(0, os.path.dirname(__file__))
 
 from services import storage

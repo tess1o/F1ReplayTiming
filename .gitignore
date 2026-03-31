@@ -1,7 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
-backend/venv/
+data-fetcher/venv/
 *.egg-info/
 
 # Node
@@ -12,7 +12,7 @@ frontend/out/
 # Data/cache
 .fastf1-cache/
 /data/
-backend/data/sessions/
+data-fetcher/data/sessions/
 
 # Environment
 .env
@@ -25,3 +25,9 @@ backend/data/sessions/
 /docs/
 .next/
 /.idea/vcs.xml
+/.idea/F1ReplayTiming.iml
+/.idea/misc.xml
+/.idea/modules.xml
+/.idea/inspectionProfiles/Project_Default.xml
+
+.gocache

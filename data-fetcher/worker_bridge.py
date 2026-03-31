@@ -73,7 +73,7 @@ def cmd_process_session(year: int, round_num: int, session_type: str) -> int:
 async def _run_live_stream(year: int, round_num: int, session_type: str, source: str, speed: float) -> int:
     from services.live_state import LiveStateManager
     from services.storage import get_json
-    from routers.live import _find_track_data, _get_test_data_dir
+    from services.track_data import find_track_data, get_test_data_dir
 
     pit_loss_green = 0.0
     pit_loss_sc = 0.0
@@ -89,7 +89,7 @@ async def _run_live_stream(year: int, round_num: int, session_type: str, source:
 
     track_norm = None
     track_points = None
-    track_data = _find_track_data(year, round_num, session_type)
+    track_data = find_track_data(year, round_num, session_type)
     if track_data:
         track_norm = track_data.get("norm")
         track_points = track_data.get("track_points")
@@ -103,7 +103,7 @@ async def _run_live_stream(year: int, round_num: int, session_type: str, source:
         track_points=track_points,
     )
 
-    data_dir = _get_test_data_dir(year, round_num, session_type)
+    data_dir = get_test_data_dir(year, round_num, session_type)
     selected_mode = source
     if source == "auto":
         selected_mode = "test" if data_dir else "signalr"

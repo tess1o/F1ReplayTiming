@@ -5,7 +5,7 @@ and replays them with original timing, useful for testing the live timing
 feature without waiting for an actual session.
 
 Expected directory layout:
-    backend/data/live_test/{year}_{round}_{session}/
+    data-fetcher/data/live_test/{year}_{round}_{session}/
         TimingData.jsonStream
         TimingAppData.jsonStream
         ...

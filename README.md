@@ -92,21 +92,30 @@ Open http://localhost:3000. Select any past session and it will be processed on 
 #### Network & URL configuration
 
 By default, the frontend proxies `/api` and `/ws` to the backend container internally. This means you usually do **not** need any frontend/backend URL variables for Docker Compose.
+In this default proxy mode, backend CORS settings are not needed.
 
 This default works for:
 - localhost access
 - access from other devices on your LAN (for example `http://192.168.1.50:3000`)
 - single-domain reverse proxy setups where the same host serves frontend and forwards `/api` + `/ws`
 
-For advanced split-domain deployments (frontend and API on different public domains), use:
+For advanced setups, choose one of these modes:
 
 | Variable | Set on | Purpose |
 |---|---|---|
-| `NEXT_PUBLIC_API_URL` | frontend | Optional absolute backend URL used by the browser (for split-domain mode) |
-| `FRONTEND_URL` | backend | Optional allowed frontend origin for CORS |
+| `BACKEND_INTERNAL_URL` | frontend | Optional runtime proxy upstream for `/api` and `/ws` (keeps same-origin, no browser CORS needed) |
+| `NEXT_PUBLIC_API_URL` | frontend | Optional absolute backend URL used by the browser (split-domain direct mode) |
+| `FRONTEND_URL` | backend | Optional allowed frontend origin for CORS (required with `NEXT_PUBLIC_API_URL`) |
 | `EXTRA_ORIGINS` | backend | Optional comma-separated additional CORS origins |
 
-**Example — split domains (`f1.example.com` + `api.f1.example.com`):**
+**Example A — same-origin UI with external backend via frontend proxy (no browser CORS):**
+```yaml
+frontend:
+  environment:
+    - BACKEND_INTERNAL_URL=https://api.f1.example.com
+```
+
+**Example B — split domains (`f1.example.com` + `api.f1.example.com`) with direct browser API calls:**
 ```yaml
 backend:
   environment:
@@ -132,22 +141,23 @@ To pre-process session data in bulk (instead of on demand), use the precompute s
 
 ```bash
 # Process a specific race weekend
-docker compose exec backend python precompute.py 2026 --round 1
+docker compose exec backend python data-fetcher/precompute.py 2026 --round 1
 
 # Process only the race session (skip practice/qualifying)
-docker compose exec backend python precompute.py 2026 --round 1 --session R
+docker compose exec backend python data-fetcher/precompute.py 2026 --round 1 --session R
 
 # Process an entire season (will take several hours)
-docker compose exec backend python precompute.py 2025 --skip-existing
+docker compose exec backend python data-fetcher/precompute.py 2025 --skip-existing
 
 # Process multiple years
-docker compose exec backend python precompute.py 2024 2025 --skip-existing
+docker compose exec backend python data-fetcher/precompute.py 2024 2025 --skip-existing
 ```
 
 ### Option C: Manual setup
 
 #### Prerequisites
 
+- Go 1.26+
 - Python 3.10+
 - Node.js 18+
 
@@ -160,24 +170,28 @@ cd F1timing
 
 #### 2. Configure environment variables
 
-**Backend** (`backend/.env`):
+**Backend** (environment variables):
 ```
 PORT=8000
 DATA_DIR=./data
+PY_WORKER_PATH=../data-fetcher/worker_bridge.py
+# PYTHON_BIN=python3
 
 # Optional - restrict access with a passphrase
 AUTH_ENABLED=false
 AUTH_PASSPHRASE=
 
-# Optional - needed only when frontend is on a different origin/domain (CORS)
+# Optional - only needed for direct browser calls to another backend origin
 # FRONTEND_URL=http://localhost:3000
 # EXTRA_ORIGINS=
 ```
 
 **Frontend** (`frontend/.env`):
 ```
-# Optional - needed only for split-domain deployments.
-# By default frontend uses same-origin proxy (/api and /ws).
+# Optional runtime proxy target for same-origin mode (/api and /ws).
+# BACKEND_INTERNAL_URL=http://localhost:8000
+
+# Optional split-domain mode: browser calls backend directly.
 # NEXT_PUBLIC_API_URL=https://api.example.com
 ```
 
@@ -185,12 +199,12 @@ AUTH_PASSPHRASE=
 #### 3. Install dependencies and start
 
 ```bash
-# Backend
+# Python data-fetcher dependencies (required for on-demand session processing)
+python3 -m pip install -r data-fetcher/requirements-worker.txt
+
+# Backend (Go API)
 cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+go run .
 
 # Frontend (in a separate terminal)
 cd frontend
@@ -213,8 +227,11 @@ Simply select any past session from the homepage. If the data hasn't been proces
 Use the CLI script to process sessions ahead of time. This is useful if you want all data ready before you start using the app.
 
 ```bash
-cd backend
+# Data fetcher (Python)
+cd data-fetcher
+python -m venv venv
 source venv/bin/activate
+pip install -r requirements-worker.txt
 
 # Process a specific race weekend
 python precompute.py 2026 --round 1
