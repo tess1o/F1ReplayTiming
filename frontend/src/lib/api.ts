@@ -1,8 +1,8 @@
 import { getToken, clearToken } from "./auth";
 
-const PLACEHOLDER = "__NEXT_PUBLIC_API_URL__";
-const rawApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim() || "";
-const explicitApiUrl = rawApiUrl && rawApiUrl !== PLACEHOLDER ? rawApiUrl.replace(/\/+$/, "") : "";
+const runtimeApiUrl = typeof window !== "undefined" ? window.__APP_CONFIG__?.API_URL?.trim() || "" : "";
+const buildTimeApiUrl = import.meta.env.VITE_API_URL?.trim() || "";
+const explicitApiUrl = (runtimeApiUrl || buildTimeApiUrl).replace(/\/+$/, "");
 
 // Empty means "use same-origin frontend proxy" (/api and /ws).
 export const API_URL = explicitApiUrl;

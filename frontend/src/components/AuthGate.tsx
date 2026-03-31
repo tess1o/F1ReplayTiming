@@ -132,7 +132,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
                 {API_URL ? (
                   <>
                     <li>
-                      <code className="text-white">NEXT_PUBLIC_API_URL</code> is set to a
+                      <code className="text-white">VITE_API_URL</code> is set to a
                       URL that isn&apos;t reachable from your browser
                     </li>
                     <li>
@@ -143,7 +143,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
                 ) : (
                   <li>
                     The frontend proxy cannot reach the backend container
-                    (<code className="text-white">backend:8000</code>)
+                    (<code className="text-white">f1-backend:8000</code>)
                   </li>
                 )}
               </ul>

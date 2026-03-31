@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useApi } from "@/hooks/useApi";
 import SessionBanner from "@/components/SessionBanner";
 
@@ -32,8 +32,8 @@ interface SessionData {
 }
 
 export default function ResultsPage() {
-  const params = useParams();
-  const searchParams = useSearchParams();
+  const params = useParams<{ year: string; round: string }>();
+  const [searchParams] = useSearchParams();
   const year = Number(params.year);
   const round = Number(params.round);
   const sessionType = searchParams.get("type") || "R";

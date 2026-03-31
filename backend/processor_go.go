@@ -30,6 +30,8 @@ type GoSessionProcessor struct {
 	sampleEvery  float64
 	fetchWorkers int
 	parseWorkers int
+	circuitMeta  *circuitMetadataIndex
+	metaLoadErr  error
 }
 
 type seasonIndex struct {
@@ -173,6 +175,8 @@ func NewGoSessionProcessor(dataDir string) *GoSessionProcessor {
 			parseWorkers = v
 		}
 	}
+	meta, metaErr := loadCircuitMetadata(embeddedCircuitMetadata)
+
 	return &GoSessionProcessor{
 		dataDir: dataDir,
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -182,6 +186,8 @@ func NewGoSessionProcessor(dataDir string) *GoSessionProcessor {
 		sampleEvery:  sampleEvery,
 		fetchWorkers: fetchWorkers,
 		parseWorkers: parseWorkers,
+		circuitMeta:  meta,
+		metaLoadErr:  metaErr,
 	}
 }
 
@@ -256,11 +262,16 @@ func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int
 		return err
 	}
 	raceControlRaw, _ := p.fetchFeedKeyframeJSON(ctx, sessionPath, sidx.Feeds["RaceControlMessages"])
+	circuitMeta, circuitName, err := p.resolveCircuitMetadata(sessionInfoRaw)
+	if err != nil {
+		return err
+	}
 
 	drivers, driverByNum := parseDriverList(driverListRaw)
 	if len(drivers) == 0 {
 		return errors.New("driver list is empty")
 	}
+	stintByAbbr := extractTimingAppStints(timingAppRaw, driverByNum)
 	info := buildInfoJSON(year, round, sessionType, meeting, sessionInfoRaw, drivers)
 	if err := p.writeJSONAtomic(filepath.Join(baseOut, "info.json"), info); err != nil {
 		return err
@@ -287,7 +298,7 @@ func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int
 	if len(posTimeline) == 0 {
 		return errors.New("position stream is empty")
 	}
-	trackJSON := buildTrackJSON(posTimeline, timingTimeline)
+	trackJSON := buildTrackJSON(posTimeline, timingTimeline, circuitMeta, circuitName)
 	if err := p.writeJSONAtomic(filepath.Join(baseOut, "track.json"), trackJSON); err != nil {
 		return err
 	}
@@ -306,7 +317,7 @@ func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int
 	rcPoints := parseRaceControlMessages(raceControlRaw)
 
 	status("Writing replay frames (streaming)...")
-	replayIdx, err := p.writeReplayFromTimelines(filepath.Join(baseOut, "replay.json"), drivers, timingTimeline, posTimeline, carTimeline, trackStatuses, weatherPoints, rcPoints, sessionType, window)
+	replayIdx, err := p.writeReplayFromTimelines(filepath.Join(baseOut, "replay.json"), drivers, timingTimeline, posTimeline, carTimeline, trackStatuses, weatherPoints, rcPoints, sessionType, window, stintByAbbr)
 	if err != nil {
 		return err
 	}
@@ -634,7 +645,7 @@ func (p *GoSessionProcessor) parseTimingDataStream(ctx context.Context, sessionP
 				if _, exists := seen[next.Lap]; !exists {
 					seen[next.Lap] = struct{}{}
 					meta := driverByNum[racing]
-					compound, tyreLife := stintForLap(stintMap[racing], next.Lap)
+					compound, tyreLife := stintForLap(stintMap[meta.Abbr], next.Lap)
 					lapsOut = append(lapsOut, map[string]any{
 						"driver":     meta.Abbr,
 						"lap_number": next.Lap,
@@ -1112,19 +1123,19 @@ func buildResultsJSON(latest map[string]timingState, byNum map[string]driverMeta
 	return out
 }
 
-func buildTrackJSON(pos map[string][]posSample, timing map[string][]timingState) map[string]any {
+func buildTrackJSON(pos map[string][]posSample, timing map[string][]timingState, meta circuitMetadataEntry, circuitName string) map[string]any {
 	points := pickRepresentativeTrackLap(pos, timing)
 	if len(points) == 0 {
 		return map[string]any{
 			"track_points": []any{},
-			"rotation":     0.0,
-			"circuit_name": "",
+			"rotation":     meta.Rotation,
+			"circuit_name": circuitName,
 			"norm": map[string]any{
 				"x_min": 0.0, "y_min": 0.0, "scale": 1.0,
 			},
 			"sector_boundaries": nil,
-			"corners":           nil,
-			"marshal_sectors":   nil,
+			"corners":           []any{},
+			"marshal_sectors":   []any{},
 		}
 	}
 	xMin, yMin, scale := boundsForTrack(points)
@@ -1140,18 +1151,36 @@ func buildTrackJSON(pos map[string][]posSample, timing map[string][]timingState)
 			"y": normalizeCoord(pt.Y, yMin, scale),
 		})
 	}
+	corners := make([]map[string]any, 0, len(meta.Corners))
+	for _, c := range meta.Corners {
+		corners = append(corners, map[string]any{
+			"x":      normalizeCoord(c.X, xMin, scale),
+			"y":      normalizeCoord(c.Y, yMin, scale),
+			"number": c.Number,
+			"letter": c.Letter,
+			"angle":  c.Angle,
+		})
+	}
+	marshalSectors := make([]map[string]any, 0, len(meta.MarshalSectors))
+	for _, s := range meta.MarshalSectors {
+		marshalSectors = append(marshalSectors, map[string]any{
+			"x":      normalizeCoord(s.X, xMin, scale),
+			"y":      normalizeCoord(s.Y, yMin, scale),
+			"number": s.Number,
+		})
+	}
 	return map[string]any{
 		"track_points": trackPts,
-		"rotation":     0.0,
-		"circuit_name": "",
+		"rotation":     meta.Rotation,
+		"circuit_name": circuitName,
 		"norm": map[string]any{
 			"x_min": xMin,
 			"y_min": yMin,
 			"scale": scale,
 		},
 		"sector_boundaries": nil,
-		"corners":           nil,
-		"marshal_sectors":   nil,
+		"corners":           corners,
+		"marshal_sectors":   marshalSectors,
 	}
 }
 
@@ -1342,7 +1371,7 @@ func normalizeCoord(v, min, scale float64) float64 {
 	return (v - min) / scale
 }
 
-func (p *GoSessionProcessor) writeReplayFromTimelines(relPath string, drivers []driverMeta, timing map[string][]timingState, positions map[string][]posSample, cars map[string][]carSample, trackStatuses []trackStatusPoint, weather []weatherPoint, rc []raceControlPoint, sessionType string, window *replayWindow) (map[string]any, error) {
+func (p *GoSessionProcessor) writeReplayFromTimelines(relPath string, drivers []driverMeta, timing map[string][]timingState, positions map[string][]posSample, cars map[string][]carSample, trackStatuses []trackStatusPoint, weather []weatherPoint, rc []raceControlPoint, sessionType string, window *replayWindow, stintsByAbbr map[string][]map[string]any) (map[string]any, error) {
 	abs := filepath.Join(p.dataDir, relPath)
 	w, err := newReplayWriter(abs)
 	if err != nil {
@@ -1394,6 +1423,10 @@ func (p *GoSessionProcessor) writeReplayFromTimelines(relPath string, drivers []
 			totalLaps = l
 		}
 	}
+	abbrToNumber := make(map[string]string, len(drivers))
+	for _, d := range drivers {
+		abbrToNumber[d.Abbr] = d.Number
+	}
 
 	for t := startT; t <= endT; t += p.sampleEvery {
 		driverRows := make([]map[string]any, 0, len(drivers))
@@ -1442,6 +1475,12 @@ func (p *GoSessionProcessor) writeReplayFromTimelines(relPath string, drivers []
 				row["in_pit"] = ts.InPit
 				row["retired"] = ts.Retired
 				row["no_timing"] = false
+				lapForTyre := lapForTyreState(sessionType, ts.Lap)
+				compound, tyreLife, tyreHistory, pitStops := tyreStateForLap(stintsByAbbr[d.Abbr], lapForTyre)
+				row["compound"] = compound
+				row["tyre_life"] = tyreLife
+				row["tyre_history"] = tyreHistory
+				row["pit_stops"] = pitStops
 			}
 			if cs != nil {
 				row["speed"] = round1(cs.Speed)
@@ -1467,19 +1506,11 @@ func (p *GoSessionProcessor) writeReplayFromTimelines(relPath string, drivers []
 			}
 			return pi < pj
 		})
-		curLap := 1
+		leadAbbr := ""
 		if len(driverRows) > 0 {
-			if leadAbbr := asString(driverRows[0]["abbr"]); leadAbbr != "" {
-				for _, d := range drivers {
-					if d.Abbr == leadAbbr {
-						if ts := latestTimingAt(timing[d.Number], t); ts != nil && ts.Lap > 0 {
-							curLap = ts.Lap
-						}
-						break
-					}
-				}
-			}
+			leadAbbr = asString(driverRows[0]["abbr"])
 		}
+		curLap := currentLapFromLeader(sessionType, totalLaps, leadAbbr, abbrToNumber, timing, t)
 		frame := map[string]any{
 			"timestamp":    round3(t - startT),
 			"lap":          curLap,
@@ -1513,6 +1544,58 @@ func (p *GoSessionProcessor) writeReplayFromTimelines(relPath string, drivers []
 		"total_laps":      w.totalLaps,
 		"quali_phases":    w.quali,
 	}, nil
+}
+
+func currentLapFromLeader(sessionType string, totalLaps int, leaderAbbr string, abbrToNumber map[string]string, timing map[string][]timingState, t float64) int {
+	sessionType = strings.ToUpper(strings.TrimSpace(sessionType))
+	if leaderAbbr == "" {
+		return 1
+	}
+	number := abbrToNumber[leaderAbbr]
+	if number == "" {
+		return 1
+	}
+	st := latestTimingAt(timing[number], t)
+	if st == nil {
+		return 1
+	}
+	// Prefer explicit lap from leader gap string (e.g. "LAP 17"), which matches
+	// UI semantics directly when available.
+	if lapFromGap := parseLapFromGapString(st.Gap); lapFromGap > 0 {
+		return lapFromGap
+	}
+	if st.Lap <= 0 {
+		return 1
+	}
+	if sessionType == "R" || sessionType == "S" {
+		// TimingData NumberOfLaps is completed laps for race/sprint, but the UI shows
+		// the current lap in progress.
+		lap := st.Lap + 1
+		if totalLaps > 0 && lap > totalLaps {
+			lap = totalLaps
+		}
+		if lap < 1 {
+			return 1
+		}
+		return lap
+	}
+	return st.Lap
+}
+
+func parseLapFromGapString(gap string) int {
+	gap = strings.TrimSpace(strings.ToUpper(gap))
+	if !strings.HasPrefix(gap, "LAP") {
+		return 0
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(gap, "LAP"))
+	if rest == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(rest)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 func (p *GoSessionProcessor) writeTelemetryFiles(baseOut string, drivers []driverMeta, cars map[string][]carSample, pos map[string][]posSample, timing map[string][]timingState) error {
@@ -1635,19 +1718,97 @@ func extractTimingAppStints(timingApp map[string]any, byNum map[string]driverMet
 }
 
 func stintForLap(stints []map[string]any, lap int) (any, any) {
-	var compound any
-	var tyreLife any
-	for _, s := range stints {
-		lapNum := asInt(s["LapNumber"])
-		if lapNum == 0 {
-			continue
+	compound, tyreLife, _, _ := tyreStateForLap(stints, lap)
+	return compound, tyreLife
+}
+
+type stintState struct {
+	StartLap int
+	Compound string
+}
+
+func lapForTyreState(sessionType string, completedLaps int) int {
+	sessionType = strings.ToUpper(strings.TrimSpace(sessionType))
+	if sessionType == "R" || sessionType == "S" {
+		if completedLaps <= 0 {
+			return 1
 		}
-		if lapNum <= lap {
-			compound = asString(s["Compound"])
-			tyreLife = asInt(s["TotalLaps"])
+		return completedLaps + 1
+	}
+	if completedLaps <= 0 {
+		return 1
+	}
+	return completedLaps
+}
+
+func tyreStateForLap(stints []map[string]any, lap int) (any, any, []any, int) {
+	if lap <= 0 {
+		return nil, nil, []any{}, 0
+	}
+	parsed := parseStintStates(stints)
+	if len(parsed) == 0 {
+		return nil, nil, []any{}, 0
+	}
+
+	idx := -1
+	for i := range parsed {
+		if parsed[i].StartLap <= lap {
+			idx = i
+		} else {
+			break
 		}
 	}
-	return nilIfEmpty(compound), nilIfZero(tyreLife)
+	if idx < 0 {
+		return nil, nil, []any{}, 0
+	}
+
+	current := parsed[idx]
+	life := lap - current.StartLap + 1
+	if life < 1 {
+		life = 1
+	}
+	history := make([]any, 0, idx)
+	for i := 0; i < idx; i++ {
+		if parsed[i].Compound != "" {
+			history = append(history, parsed[i].Compound)
+		}
+	}
+	return nilIfEmpty(current.Compound), nilIfZero(life), history, idx
+}
+
+func parseStintStates(stints []map[string]any) []stintState {
+	out := make([]stintState, 0, len(stints))
+	for _, s := range stints {
+		start := asInt(s["LapNumber"])
+		if start <= 0 {
+			continue
+		}
+		compound := asString(s["Compound"])
+		if compound == "" {
+			continue
+		}
+		out = append(out, stintState{
+			StartLap: start,
+			Compound: strings.ToUpper(strings.TrimSpace(compound)),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StartLap == out[j].StartLap {
+			return out[i].Compound < out[j].Compound
+		}
+		return out[i].StartLap < out[j].StartLap
+	})
+	// De-duplicate repeated start laps, keeping the first entry.
+	dedup := out[:0]
+	lastStart := -1
+	for _, s := range out {
+		if s.StartLap == lastStart {
+			continue
+		}
+		dedup = append(dedup, s)
+		lastStart = s.StartLap
+	}
+	return dedup
 }
 
 func nilIfEmpty(v any) any {

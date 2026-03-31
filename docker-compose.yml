@@ -24,10 +24,10 @@ services:
     build: ./frontend
     container_name: f1-frontend
     #environment:
-      # Optional runtime override for proxy upstream (/api + /ws)
-      # - BACKEND_INTERNAL_URL=http://backend:8000
+      # Optional runtime override for Nginx proxy upstream (/api + /ws)
+      # - BACKEND_INTERNAL_URL=http://f1-backend:8000
       # Optional: browser talks to backend directly (requires backend CORS)
-      # - NEXT_PUBLIC_API_URL=https://api.f1.example.com
+      # - VITE_API_URL=https://api.f1.example.com
     ports:
       - "3000:3000"  # Change the left side to use a different host port
     depends_on:

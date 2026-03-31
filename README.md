@@ -9,7 +9,7 @@ https://github.com/user-attachments/assets/952b8634-2470-46d9-96e2-67a820459a49
 
 > **Disclaimer:** This project is intended for **personal, non-commercial use only**. This website is unofficial and is not associated in any way with the Formula 1 companies. F1, FORMULA ONE, FORMULA 1, FIA FORMULA ONE WORLD CHAMPIONSHIP, GRAND PRIX and related marks are trade marks of Formula One Licensing B.V.
 
-A web app for watching Formula 1 sessions with real timing data, car positions on track, driver telemetry, and more - both live during race weekends and as replays of past sessions. Built with Next.js and a Go backend.
+A web app for watching Formula 1 sessions with real timing data, car positions on track, driver telemetry, and more - both live during race weekends and as replays of past sessions. Built with React (Vite) and a Go backend.
 
 ## Features
 
@@ -31,7 +31,7 @@ A web app for watching Formula 1 sessions with real timing data, car positions o
 
 ## Architecture
 
-- **Frontend**: Next.js (React) with Tailwind CSS
+- **Frontend**: React + Vite with Tailwind CSS, served by Nginx
 - **Backend**: Go web service - serves pre-computed data from local storage
 - **Data Source**: [FastF1](https://github.com/theOehrly/Fast-F1) (used during data processing only)
 
@@ -104,8 +104,8 @@ For advanced setups, choose one of these modes:
 | Variable | Set on | Purpose |
 |---|---|---|
 | `BACKEND_INTERNAL_URL` | frontend | Optional runtime proxy upstream for `/api` and `/ws` (keeps same-origin, no browser CORS needed) |
-| `NEXT_PUBLIC_API_URL` | frontend | Optional absolute backend URL used by the browser (split-domain direct mode) |
-| `FRONTEND_URL` | backend | Optional allowed frontend origin for CORS (required with `NEXT_PUBLIC_API_URL`) |
+| `VITE_API_URL` | frontend | Optional absolute backend URL used by the browser (split-domain direct mode) |
+| `FRONTEND_URL` | backend | Optional allowed frontend origin for CORS (required with `VITE_API_URL`) |
 | `EXTRA_ORIGINS` | backend | Optional comma-separated additional CORS origins |
 
 **Example A — same-origin UI with external backend via frontend proxy (no browser CORS):**
@@ -123,7 +123,7 @@ backend:
 
 frontend:
   environment:
-    - NEXT_PUBLIC_API_URL=https://api.f1.example.com
+    - VITE_API_URL=https://api.f1.example.com
 ```
 
 #### Optional features
@@ -193,7 +193,7 @@ AUTH_PASSPHRASE=
 # BACKEND_INTERNAL_URL=http://localhost:8000
 
 # Optional split-domain mode: browser calls backend directly.
-# NEXT_PUBLIC_API_URL=https://api.example.com
+# VITE_API_URL=https://api.example.com
 ```
 
 

@@ -1,44 +1,26 @@
-FROM node:20-alpine AS base
-
-# Install dependencies
-FROM base AS deps
+FROM node:20-alpine AS builder
 WORKDIR /app
+
 COPY package.json package-lock.json* ./
 RUN npm ci
 
-# Build
-FROM base AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-ARG NEXT_PUBLIC_API_URL=__NEXT_PUBLIC_API_URL__
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ARG VITE_API_URL=
+ENV VITE_API_URL=$VITE_API_URL
 
 RUN npm run build
 
-# Production
-FROM base AS runner
-WORKDIR /app
+FROM nginx:alpine AS runner
+WORKDIR /usr/share/nginx/html
 
-ENV NODE_ENV=production
+ENV BACKEND_INTERNAL_URL=http://f1-backend:8000
+ENV VITE_API_URL=
 
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
+COPY --from=builder /app/dist/ ./
+COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY nginx/40-generate-config.sh /docker-entrypoint.d/40-generate-config.sh
 
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-USER nextjs
+RUN chmod +x /docker-entrypoint.d/40-generate-config.sh
 
 EXPOSE 3000
-
-ENV PORT=3000
-ENV HOSTNAME="0.0.0.0"
-
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["node", "server.js"]

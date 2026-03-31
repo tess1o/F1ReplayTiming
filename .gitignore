@@ -8,6 +8,7 @@ data-fetcher/venv/
 frontend/node_modules/
 frontend/.next/
 frontend/out/
+frontend/dist/
 
 # Data/cache
 .fastf1-cache/

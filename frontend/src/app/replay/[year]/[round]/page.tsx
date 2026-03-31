@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useApi } from "@/hooks/useApi";
 import { useReplaySocket } from "@/hooks/useReplaySocket";
 import { useSettings } from "@/hooks/useSettings";
@@ -56,8 +56,8 @@ interface DownloadStatus {
 }
 
 export default function ReplayPage() {
-  const params = useParams();
-  const searchParams = useSearchParams();
+  const params = useParams<{ year: string; round: string }>();
+  const [searchParams] = useSearchParams();
   const year = Number(params.year);
   const round = Number(params.round);
   const sessionType = searchParams.get("type") || "R";

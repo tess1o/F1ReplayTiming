@@ -215,6 +215,225 @@ func TestBoundsForTrackAndNormalizeCoord(t *testing.T) {
 	}
 }
 
+func TestParseLapFromGapString(t *testing.T) {
+	if got := parseLapFromGapString("LAP 17"); got != 17 {
+		t.Fatalf("expected 17, got %d", got)
+	}
+	if got := parseLapFromGapString("lap 3"); got != 3 {
+		t.Fatalf("expected 3, got %d", got)
+	}
+	if got := parseLapFromGapString("+2.331"); got != 0 {
+		t.Fatalf("expected 0, got %d", got)
+	}
+}
+
+func TestCurrentLapFromLeaderRaceSemantics(t *testing.T) {
+	abbrMap := map[string]string{"PER": "11"}
+	timing := map[string][]timingState{
+		"11": {
+			{T: 100, Lap: 1, Gap: ""},
+			{T: 200, Lap: 2, Gap: ""},
+		},
+	}
+	if lap := currentLapFromLeader("R", 53, "PER", abbrMap, timing, 100); lap != 2 {
+		t.Fatalf("expected race lap 2 after first completed lap, got %d", lap)
+	}
+	if lap := currentLapFromLeader("R", 53, "PER", abbrMap, timing, 200); lap != 3 {
+		t.Fatalf("expected race lap 3 after second completed lap, got %d", lap)
+	}
+}
+
+func TestCurrentLapFromLeaderUsesGapString(t *testing.T) {
+	abbrMap := map[string]string{"PER": "11"}
+	timing := map[string][]timingState{
+		"11": {
+			{T: 100, Lap: 1, Gap: "LAP 7"},
+		},
+	}
+	if lap := currentLapFromLeader("R", 53, "PER", abbrMap, timing, 100); lap != 7 {
+		t.Fatalf("expected lap from gap string, got %d", lap)
+	}
+}
+
+func TestLapForTyreState(t *testing.T) {
+	if got := lapForTyreState("R", 0); got != 1 {
+		t.Fatalf("race tyre lap expected 1, got %d", got)
+	}
+	if got := lapForTyreState("R", 2); got != 3 {
+		t.Fatalf("race tyre lap expected 3, got %d", got)
+	}
+	if got := lapForTyreState("Q", 2); got != 2 {
+		t.Fatalf("quali tyre lap expected 2, got %d", got)
+	}
+}
+
+func TestTyreStateForLap(t *testing.T) {
+	stints := []map[string]any{
+		{"LapNumber": 1.0, "Compound": "SOFT"},
+		{"LapNumber": 12.0, "Compound": "MEDIUM"},
+		{"LapNumber": 35.0, "Compound": "HARD"},
+	}
+	compound, life, history, pitStops := tyreStateForLap(stints, 18)
+	if asString(compound) != "MEDIUM" {
+		t.Fatalf("expected MEDIUM, got %v", compound)
+	}
+	if asInt(life) != 7 {
+		t.Fatalf("expected tyre life 7, got %v", life)
+	}
+	if pitStops != 1 {
+		t.Fatalf("expected 1 pit stop, got %d", pitStops)
+	}
+	if len(history) != 1 || asString(history[0]) != "SOFT" {
+		t.Fatalf("unexpected history: %#v", history)
+	}
+}
+
+func TestExtractTimingAppStintsKeysByAbbreviation(t *testing.T) {
+	timingApp := map[string]any{
+		"Lines": map[string]any{
+			"63": map[string]any{
+				"RacingNumber": "63",
+				"Stints": []any{
+					map[string]any{"LapNumber": 1.0, "Compound": "SOFT"},
+				},
+			},
+		},
+	}
+	byNum := map[string]driverMeta{
+		"63": {Abbr: "RUS"},
+	}
+	stints := extractTimingAppStints(timingApp, byNum)
+	if _, ok := stints["RUS"]; !ok {
+		t.Fatalf("expected stints keyed by abbreviation")
+	}
+	if _, ok := stints["63"]; ok {
+		t.Fatalf("did not expect racing number key in stints map")
+	}
+}
+
+func TestLoadCircuitMetadataValidation(t *testing.T) {
+	valid := []byte(`{
+  "version": 1,
+  "circuits": {
+    "49": {
+      "rotation": 237,
+      "corners": [{"x": 1, "y": 2, "number": 1, "angle": 90}],
+      "marshal_sectors": [{"x": 3, "y": 4, "number": 1}]
+    }
+  }
+}`)
+	idx, err := loadCircuitMetadata(valid)
+	if err != nil {
+		t.Fatalf("expected valid metadata, got err=%v", err)
+	}
+	if idx == nil || len(idx.Circuits) != 1 {
+		t.Fatalf("unexpected metadata index")
+	}
+
+	badJSON := []byte(`{"version":1,"circuits":`)
+	if _, err := loadCircuitMetadata(badJSON); err == nil {
+		t.Fatalf("expected json decode error")
+	}
+
+	missingMarkers := []byte(`{
+  "version": 1,
+  "circuits": {
+    "49": {
+      "rotation": 237,
+      "corners": [],
+      "marshal_sectors": [{"x": 3, "y": 4, "number": 1}]
+    }
+  }
+}`)
+	if _, err := loadCircuitMetadata(missingMarkers); err == nil {
+		t.Fatalf("expected validation error for missing corners")
+	}
+}
+
+func TestExtractCircuitKeyFromSessionInfo(t *testing.T) {
+	sessionInfo := map[string]any{
+		"Meeting": map[string]any{
+			"Name":     "Chinese Grand Prix",
+			"Location": "Shanghai",
+			"Circuit": map[string]any{
+				"Key":       49.0,
+				"ShortName": "Shanghai",
+			},
+		},
+	}
+	key, name, err := extractCircuitKeyFromSessionInfo(sessionInfo)
+	if err != nil {
+		t.Fatalf("extractCircuitKeyFromSessionInfo failed: %v", err)
+	}
+	if key != 49 || name != "Shanghai" {
+		t.Fatalf("unexpected key/name: %d %s", key, name)
+	}
+}
+
+func TestResolveCircuitMetadataMissing(t *testing.T) {
+	p := &GoSessionProcessor{
+		circuitMeta: &circuitMetadataIndex{
+			Version:  circuitMetadataVersion,
+			Circuits: map[int]circuitMetadataEntry{},
+		},
+	}
+	sessionInfo := map[string]any{
+		"Meeting": map[string]any{
+			"Location": "Shanghai",
+			"Circuit":  map[string]any{"Key": 49.0, "ShortName": "Shanghai"},
+		},
+	}
+	if _, _, err := p.resolveCircuitMetadata(sessionInfo); err == nil {
+		t.Fatalf("expected missing metadata error")
+	}
+}
+
+func TestBuildTrackJSONWithMetadata(t *testing.T) {
+	pos := map[string][]posSample{
+		"1": {
+			{T: 10.1, X: 0, Y: 0},
+			{T: 10.2, X: 1, Y: 0},
+			{T: 10.3, X: 2, Y: 0},
+			{T: 20.1, X: 0, Y: 0},
+			{T: 20.2, X: 0, Y: 1},
+			{T: 20.3, X: 0, Y: 2},
+			{T: 30.1, X: 0, Y: 0},
+			{T: 30.2, X: -1, Y: 0},
+			{T: 30.3, X: -2, Y: 0},
+		},
+	}
+	timing := map[string][]timingState{
+		"1": {
+			{T: 10, Lap: 1},
+			{T: 20, Lap: 2},
+			{T: 30, Lap: 3},
+		},
+	}
+	meta := circuitMetadataEntry{
+		CircuitKey:  49,
+		CircuitName: "Shanghai",
+		Rotation:    237,
+		Corners: []circuitCornerMeta{
+			{X: 0, Y: 0, Number: 1, Angle: 10},
+		},
+		MarshalSectors: []circuitMarshalSectorMeta{
+			{X: 0, Y: 0, Number: 1},
+		},
+	}
+	track := buildTrackJSON(pos, timing, meta, "Shanghai")
+	if asFloat(track["rotation"], -1) != 237 {
+		t.Fatalf("unexpected rotation in track json")
+	}
+	corners, _ := track["corners"].([]map[string]any)
+	if len(corners) == 0 {
+		t.Fatalf("expected non-empty corners")
+	}
+	ms, _ := track["marshal_sectors"].([]map[string]any)
+	if len(ms) == 0 {
+		t.Fatalf("expected non-empty marshal sectors")
+	}
+}
+
 func TestGoProcessorEnsureSchedule(t *testing.T) {
 	if os.Getenv("RUN_NET_TESTS") != "1" {
 		t.Skip("set RUN_NET_TESTS=1 to run network-backed processor tests")
@@ -272,5 +491,28 @@ func TestGoProcessorProcessSessionSmoke(t *testing.T) {
 		if _, err := os.Stat(pth); err != nil {
 			t.Fatalf("required artifact missing %s: %v", pth, err)
 		}
+	}
+	trackPath := filepath.Join(dir, "sessions", strconv.Itoa(year), strconv.Itoa(round), sessionType, "track.json")
+	raw, err := os.ReadFile(trackPath)
+	if err != nil {
+		t.Fatalf("read track json: %v", err)
+	}
+	var track map[string]any
+	if err := json.Unmarshal(raw, &track); err != nil {
+		t.Fatalf("decode track json: %v", err)
+	}
+	if _, ok := track["rotation"]; !ok {
+		t.Fatalf("track json missing rotation")
+	}
+	if year == 2026 && round == 2 && strings.EqualFold(sessionType, "R") {
+		if rot := asFloat(track["rotation"], -1); rot != 237 {
+			t.Fatalf("unexpected Shanghai rotation: got %.1f want 237.0", rot)
+		}
+	}
+	if arr, ok := track["corners"].([]any); !ok || len(arr) == 0 {
+		t.Fatalf("track json corners missing/empty")
+	}
+	if arr, ok := track["marshal_sectors"].([]any); !ok || len(arr) == 0 {
+		t.Fatalf("track json marshal_sectors missing/empty")
 	}
 }

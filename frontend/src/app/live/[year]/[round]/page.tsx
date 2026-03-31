@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useApi } from "@/hooks/useApi";
 import { useLiveSocket } from "@/hooks/useLiveSocket";
 import { useSettings } from "@/hooks/useSettings";
@@ -37,8 +37,8 @@ interface SessionData {
 }
 
 export default function LivePage() {
-  const params = useParams();
-  const searchParams = useSearchParams();
+  const params = useParams<{ year: string; round: string }>();
+  const [searchParams] = useSearchParams();
   const year = Number(params.year);
   const round = Number(params.round);
   const sessionType = searchParams.get("type") || "R";
