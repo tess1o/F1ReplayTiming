@@ -1,37 +1,20 @@
 services:
   f1-backend:
+    image: ghcr.io/tess1o/f1replaytiming-backend:${F1RT_TAG:-latest}
     container_name: f1-backend
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
     environment:
-      - DATA_DIR=/data
-      - SQLITE_PATH=/data/f1.db
       - REPLAY_CACHE_MAX_MB=64
       - REPLAY_CACHE_TTL_SECONDS=45
       - GOMEMLIMIT=192MiB
       - GOGC=30
-      - PROCESS_CHUNK_CODEC=protobuf
-      - PROCESS_RAW_MIN_DT_SECONDS=0.10
-      # Optional - uncomment to enable features
-      # - AUTH_ENABLED=true
-      # - AUTH_PASSPHRASE=your-passphrase
-      # Enable only when frontend calls backend directly (cross-origin)
-      # - FRONTEND_URL=http://localhost:3000
-      # - EXTRA_ORIGINS=https://f1.example.com
     volumes:
       - f1data:/data
 
   f1-frontend:
-    build: ./frontend
+    image: ghcr.io/tess1o/f1replaytiming-frontend:${F1RT_TAG:-latest}
     container_name: f1-frontend
-    #environment:
-      # Optional runtime override for Nginx proxy upstream (/api + /ws)
-      # - BACKEND_INTERNAL_URL=http://f1-backend:8000
-      # Optional: browser talks to backend directly (requires backend CORS)
-      # - VITE_API_URL=https://api.f1.example.com
     ports:
-      - "3000:3000"  # Change the left side to use a different host port
+      - "3000:3000"
     depends_on:
       - f1-backend
 

@@ -1,0 +1,30 @@
+services:
+  f1-backend:
+    container_name: f1-backend-dev
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      - DATA_DIR=/data
+      - SQLITE_PATH=/data/f1.db
+      - REPLAY_CACHE_MAX_MB=64
+      - REPLAY_CACHE_TTL_SECONDS=45
+      - GOMEMLIMIT=192MiB
+      - GOGC=30
+      - PROCESS_CHUNK_CODEC=protobuf
+      - PROCESS_RAW_MIN_DT_SECONDS=0.10
+    volumes:
+      - f1data-dev:/data
+
+  f1-frontend:
+    container_name: f1-frontend-dev
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - f1-backend
+
+volumes:
+  f1data-dev:
