@@ -87,6 +87,12 @@ function formatDateTime(iso?: string): string {
   });
 }
 
+function toSessionCode(value?: string): string {
+  const raw = (value || "").trim();
+  if (!raw) return "";
+  return SESSION_LABELS[raw] || raw.toUpperCase();
+}
+
 export default function DownloadsPage() {
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(currentYear);
@@ -307,12 +313,20 @@ export default function DownloadsPage() {
               {(queueData?.recent_jobs || []).slice(0, 30).map((job) => (
                 <div key={job.id} className="p-2 rounded border border-f1-border text-xs">
                   <p className="text-white font-bold">
-                    {job.year} R{job.round} {job.session_type}
+                    {job.year} R{job.round} {toSessionCode(job.session_type)}
                   </p>
                   <p className={job.state === "failed" ? "text-red-300" : "text-green-300"}>{job.state}</p>
                   {job.message && <p className="text-f1-muted">{job.message}</p>}
                   {job.last_error && <p className="text-red-300">{job.last_error}</p>}
                   <p className="text-f1-muted">{formatDateTime(job.updated_at)}</p>
+                  {(job.state === "downloaded" || job.state === "done" || job.state === "completed") && toSessionCode(job.session_type) && (
+                    <a
+                      href={`/replay/${job.year}/${job.round}?type=${toSessionCode(job.session_type)}`}
+                      className="inline-block mt-2 px-2 py-1 bg-f1-border text-white rounded hover:bg-f1-red"
+                    >
+                      Open Replay
+                    </a>
+                  )}
                 </div>
               ))}
               {(queueData?.recent_jobs || []).length === 0 && (

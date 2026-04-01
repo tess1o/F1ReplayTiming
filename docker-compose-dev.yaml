@@ -1,6 +1,7 @@
 services:
   f1-backend:
     container_name: f1-backend-dev
+    platform: linux/arm64
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -18,6 +19,7 @@ services:
 
   f1-frontend:
     container_name: f1-frontend-dev
+    platform: linux/arm64
     build:
       context: ./frontend
       dockerfile: Dockerfile

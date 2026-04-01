@@ -156,15 +156,27 @@ export default function SessionPicker() {
   const { data: liveData } = useApi<{ live: LiveSessionInfo | null }>("/api/live/status");
   const liveSession = liveData?.live || null;
 
-  useEffect(() => {
-    const timer = setInterval(() => setRefreshTick((t) => t + 1), 5000);
-    return () => clearInterval(timer);
-  }, []);
-
   const seasons = (seasonsData?.seasons || []).filter((s) => s <= currentYear);
   const events = eventsData?.events || [];
 
   const displayEvents = events;
+
+  const shouldPollEvents = useMemo(
+    () =>
+      displayEvents.some((evt) =>
+        evt.sessions.some((session) => {
+          const state = session.download_state || (session.downloaded ? "downloaded" : "not_downloaded");
+          return state === "queued" || state === "processing";
+        }),
+      ),
+    [displayEvents],
+  );
+
+  useEffect(() => {
+    if (!shouldPollEvents) return;
+    const timer = setInterval(() => setRefreshTick((t) => t + 1), 5000);
+    return () => clearInterval(timer);
+  }, [shouldPollEvents]);
 
   const latestEvent = useMemo(
     () => year === currentYear ? displayEvents.find((e) => e.status === "latest") || null : null,
@@ -361,6 +373,9 @@ export default function SessionPicker() {
                       {localTime.dayDate}<br />{localTime.time}
                     </span>
                   )}
+                  <span className="text-[10px] text-f1-muted mb-1 font-bold">
+                    {session.name}
+                  </span>
                   <button
                     type="button"
                     onClick={(e) => {
@@ -486,7 +501,7 @@ export default function SessionPicker() {
           ))}
         </div>
 
-        {eventsLoading ? (
+        {eventsLoading && !eventsData ? (
           <div className="text-f1-muted text-center py-20">
             <div className="inline-block w-8 h-8 border-2 border-f1-muted border-t-f1-red rounded-full animate-spin mb-4" />
             <p>Loading data...</p>
