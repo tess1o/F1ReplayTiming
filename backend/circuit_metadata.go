@@ -12,7 +12,7 @@ import (
 
 const circuitMetadataVersion = 1
 
-//go:embed circuit_metadata.json
+//go:embed assets/circuit_metadata.json
 var embeddedCircuitMetadata []byte
 
 type circuitMetadataIndex struct {
@@ -129,19 +129,35 @@ func loadCircuitMetadata(raw []byte) (*circuitMetadataIndex, error) {
 }
 
 func (p *GoSessionProcessor) resolveCircuitMetadata(sessionInfo map[string]any) (circuitMetadataEntry, string, error) {
-	if p.metaLoadErr != nil {
-		return circuitMetadataEntry{}, "", fmt.Errorf("circuit metadata load failed: %w", p.metaLoadErr)
+	p.circuitMetaMu.RLock()
+	metaErr := p.metaLoadErr
+	metaIndex := p.circuitMeta
+	p.circuitMetaMu.RUnlock()
+
+	if metaErr != nil {
+		return circuitMetadataEntry{}, "", fmt.Errorf("circuit metadata load failed: %w", metaErr)
 	}
-	if p.circuitMeta == nil || len(p.circuitMeta.Circuits) == 0 {
+	if metaIndex == nil {
 		return circuitMetadataEntry{}, "", fmt.Errorf("circuit metadata is not initialized")
 	}
 	circuitKey, circuitName, err := extractCircuitKeyFromSessionInfo(sessionInfo)
 	if err != nil {
 		return circuitMetadataEntry{}, "", err
 	}
-	meta, ok := p.circuitMeta.Circuits[circuitKey]
+	meta, ok := metaIndex.Circuits[circuitKey]
 	if !ok {
-		return circuitMetadataEntry{}, "", fmt.Errorf("circuit metadata missing for key=%d (%s)", circuitKey, defaultString(circuitName, "unknown"))
+		if circuitName == "" {
+			circuitName = fmt.Sprintf("Circuit %d", circuitKey)
+		}
+		// Do not block session processing when metadata lags behind a new circuit.
+		// Track rotation/markers are optional enrichments for rendering.
+		return circuitMetadataEntry{
+			CircuitKey:     circuitKey,
+			CircuitName:    circuitName,
+			Rotation:       0,
+			Corners:        []circuitCornerMeta{},
+			MarshalSectors: []circuitMarshalSectorMeta{},
+		}, circuitName, nil
 	}
 	if circuitName == "" {
 		circuitName = meta.CircuitName

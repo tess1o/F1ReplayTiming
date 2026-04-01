@@ -25,6 +25,9 @@ func main() {
 	}()
 
 	application.downloads.start()
+	if application.staticData != nil {
+		application.staticData.start()
+	}
 	handler := application.withMiddleware(newHTTPMux(application))
 	log.Printf("Go backend listening on :%s (data_dir=%s)", port, application.dataDir)
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
@@ -58,6 +61,7 @@ func newAppFromEnv() *app {
 	}
 	application.processor = NewSessionProcessor(dataDir, store, replayChunkFrames, telemetryChunkSamples)
 	application.downloads = newDownloadManager(application, dataDir)
+	application.staticData = newStaticDataRefresher(application)
 	return application
 }
 
@@ -76,6 +80,8 @@ func newHTTPMux(a *app) *http.ServeMux {
 	mux.HandleFunc("GET /api/sessions/{year}/{round}/results", a.handleResults)
 	mux.HandleFunc("GET /api/sessions/{year}/{round}/telemetry", a.handleTelemetry)
 	mux.HandleFunc("GET /api/live/status", a.handleLiveStatus)
+	mux.HandleFunc("GET /api/static-data/status", a.handleStaticDataStatus)
+	mux.HandleFunc("POST /api/static-data/refresh", a.handleStaticDataRefresh)
 	mux.HandleFunc("GET /api/downloads/queue", a.handleDownloadsQueue)
 	mux.HandleFunc("GET /api/downloads/session-status", a.handleDownloadSessionStatus)
 	mux.HandleFunc("POST /api/downloads/enqueue", a.handleDownloadEnqueue)

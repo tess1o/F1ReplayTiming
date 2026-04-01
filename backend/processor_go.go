@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"f1replaytiming/backend/storage"
@@ -25,6 +28,7 @@ type GoSessionProcessor struct {
 	rawMinDelta           float64
 	replayChunkCodec      string
 	telemetryChunkCodec   string
+	circuitMetaMu         sync.RWMutex
 	circuitMeta           *circuitMetadataIndex
 	metaLoadErr           error
 }
@@ -171,6 +175,16 @@ func NewGoSessionProcessor(dataDir string, store *storage.Store, replayChunkFram
 		}
 	}
 	meta, metaErr := loadCircuitMetadata(embeddedCircuitMetadata)
+	if store != nil {
+		if raw, err := store.GetJSONArtifact(context.Background(), "circuit_metadata.json"); err == nil {
+			if loaded, loadErr := loadCircuitMetadata(raw); loadErr == nil {
+				meta = loaded
+				metaErr = nil
+			} else {
+				log.Printf("processor(go): invalid circuit_metadata.json override, using embedded defaults: %v", loadErr)
+			}
+		}
+	}
 	if replayChunkFrames <= 0 {
 		replayChunkFrames = 256
 	}
@@ -209,4 +223,16 @@ func NewGoSessionProcessor(dataDir string, store *storage.Store, replayChunkFram
 		circuitMeta:           meta,
 		metaLoadErr:           metaErr,
 	}
+}
+
+func (p *GoSessionProcessor) SetCircuitMetadata(raw []byte) error {
+	loaded, err := loadCircuitMetadata(raw)
+	if err != nil {
+		return err
+	}
+	p.circuitMetaMu.Lock()
+	defer p.circuitMetaMu.Unlock()
+	p.circuitMeta = loaded
+	p.metaLoadErr = nil
+	return nil
 }

@@ -16,7 +16,7 @@ import (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-//go:embed pit_loss.json
+//go:embed assets/pit_loss.json
 var pitLossJSON []byte
 
 func openStore(dataDir string) *storage.Store {
@@ -40,17 +40,58 @@ func openStore(dataDir string) *storage.Store {
 	if err != nil {
 		log.Fatalf("failed to open sqlite store (%s): %v", sqlitePath, err)
 	}
-	if err := bootstrapStaticArtifacts(st); err != nil {
+	if err := bootstrapStaticArtifacts(st, dataDir); err != nil {
 		log.Fatalf("failed to bootstrap static artifacts: %v", err)
 	}
 	return st
 }
 
-func bootstrapStaticArtifacts(st *storage.Store) error {
+func bootstrapStaticArtifacts(st *storage.Store, dataDir string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := st.GetJSONArtifact(ctx, "pit_loss.json"); err == nil {
+
+	if err := upsertArtifactFromOverridesOrDefault(
+		ctx,
+		st,
+		"pit_loss.json",
+		pitLossJSON,
+		[]string{
+			strings.TrimSpace(os.Getenv("PIT_LOSS_PATH")),
+			filepath.Join(dataDir, "static", "pit_loss.json"),
+		},
+	); err != nil {
+		return err
+	}
+	return upsertArtifactFromOverridesOrDefault(
+		ctx,
+		st,
+		"circuit_metadata.json",
+		embeddedCircuitMetadata,
+		[]string{
+			strings.TrimSpace(os.Getenv("CIRCUIT_METADATA_PATH")),
+			filepath.Join(dataDir, "static", "circuit_metadata.json"),
+		},
+	)
+}
+
+func upsertArtifactFromOverridesOrDefault(ctx context.Context, st *storage.Store, artifactPath string, defaultBody []byte, overridePaths []string) error {
+	for _, p := range overridePaths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if len(strings.TrimSpace(string(b))) == 0 {
+			continue
+		}
+		return st.PutJSONArtifact(ctx, artifactPath, b)
+	}
+
+	if _, err := st.GetJSONArtifact(ctx, artifactPath); err == nil {
 		return nil
 	}
-	return st.PutJSONArtifact(ctx, "pit_loss.json", pitLossJSON)
+	return st.PutJSONArtifact(ctx, artifactPath, defaultBody)
 }

@@ -581,8 +581,18 @@ func TestResolveCircuitMetadataMissing(t *testing.T) {
 			"Circuit":  map[string]any{"Key": 49.0, "ShortName": "Shanghai"},
 		},
 	}
-	if _, _, err := p.resolveCircuitMetadata(sessionInfo); err == nil {
-		t.Fatalf("expected missing metadata error")
+	meta, name, err := p.resolveCircuitMetadata(sessionInfo)
+	if err != nil {
+		t.Fatalf("expected graceful fallback metadata, got err=%v", err)
+	}
+	if name != "Shanghai" {
+		t.Fatalf("expected circuit name fallback, got %q", name)
+	}
+	if meta.CircuitKey != 49 {
+		t.Fatalf("expected circuit key 49, got %d", meta.CircuitKey)
+	}
+	if len(meta.Corners) != 0 || len(meta.MarshalSectors) != 0 {
+		t.Fatalf("expected empty markers for fallback metadata")
 	}
 }
 

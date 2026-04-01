@@ -28,6 +28,7 @@ type app struct {
 	replayChunkSize int
 	replayCache     *replayCache
 	downloads       *downloadManager
+	staticData      *staticDataRefresher
 	allowedOrigins  map[string]struct{}
 	authEnabled     bool
 	authPassphrase  string

@@ -118,7 +118,7 @@ func (m orderedCircuitMetadataMap) MarshalJSON() ([]byte, error) {
 func main() {
 	var (
 		yearsRaw = flag.String("years", "2024,2025,2026,2027,2028", "comma separated championship years")
-		outPath  = flag.String("out", "circuit_metadata.json", "output path")
+		outPath  = flag.String("out", "assets/circuit_metadata.json", "output path")
 		timeout  = flag.Duration("timeout", 30*time.Second, "http timeout")
 	)
 	flag.Parse()
