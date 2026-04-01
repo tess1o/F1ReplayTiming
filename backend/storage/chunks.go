@@ -144,10 +144,9 @@ func DecodeTelemetryChunk(payload []byte, codec string) (*TelemetryChunkPayload,
 		if err != nil {
 			return nil, err
 		}
-		var err2 error
-		raw, err2 = dec.DecodeAll(payload, nil)
-		if err2 != nil {
-			return nil, err2
+		raw, err = dec.DecodeAll(payload, nil)
+		if err != nil {
+			return nil, err
 		}
 	} else {
 		return nil, fmt.Errorf("unsupported telemetry codec %q", codec)
