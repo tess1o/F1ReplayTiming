@@ -9,8 +9,25 @@ import (
 	"io"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 )
+
+type lapSectorState struct {
+	Time            string
+	Color           string
+	HasOverall      bool
+	OverallFastest  bool
+	HasPersonal     bool
+	PersonalFastest bool
+}
+
+type pendingLapSectorUpdate struct {
+	Lap       int
+	Index     int
+	ExpiresAt float64
+	Sectors   [3]lapSectorState
+}
 
 func (p *GoSessionProcessor) parseTimingDataStream(ctx context.Context, sessionPath string, feed sessionFeed, driverByNum map[string]driverMeta, timingApp map[string]any, phaseTimeline []qualifyingPhasePoint) (map[string][]timingState, []map[string]any, map[string]timingState, error) {
 	url := fmt.Sprintf("%s/%s/%s", p.baseURL, strings.Trim(sessionPath, "/"), strings.Trim(feed.StreamPath, "/"))
@@ -22,6 +39,8 @@ func (p *GoSessionProcessor) parseTimingDataStream(ctx context.Context, sessionP
 
 	perDriver := map[string][]timingState{}
 	current := map[string]timingState{}
+	sectorByDriver := map[string][3]lapSectorState{}
+	pendingLapByDriver := map[string]pendingLapSectorUpdate{}
 	lapSeen := map[string]map[int]struct{}{}
 	lapsOut := make([]map[string]any, 0, 4096)
 	stintMap := extractTimingAppStints(timingApp, driverByNum)
@@ -57,6 +76,7 @@ func (p *GoSessionProcessor) parseTimingDataStream(ctx context.Context, sessionP
 			}
 			prev := current[racing]
 			next := prev
+			prevLap := prev.Lap
 			next.T = ts
 			if v := asInt(ln["NumberOfLaps"]); v > 0 {
 				next.Lap = v
@@ -79,6 +99,29 @@ func (p *GoSessionProcessor) parseTimingDataStream(ctx context.Context, sessionP
 			if v, ok := ln["Retired"].(bool); ok {
 				next.Retired = v
 			}
+			pending, hasPending := pendingLapByDriver[racing]
+			if hasPending && (ts > pending.ExpiresAt || (next.Lap > 0 && next.Lap > pending.Lap)) {
+				delete(pendingLapByDriver, racing)
+				hasPending = false
+			}
+
+			sectors := sectorByDriver[racing]
+			sectorsUpdated := false
+			pendingUpdated := false
+			if raw, exists := ln["Sectors"]; exists {
+				if hasPending && ts <= pending.ExpiresAt && next.Lap == pending.Lap {
+					var changed bool
+					pending.Sectors, changed = mergeSectorStates(pending.Sectors, raw)
+					if changed {
+						pendingLapByDriver[racing] = pending
+						pendingUpdated = true
+					}
+				} else {
+					var changed bool
+					sectors, changed = mergeSectorStates(sectors, raw)
+					sectorsUpdated = changed
+				}
+			}
 			current[racing] = next
 			perDriver[racing] = append(perDriver[racing], next)
 
@@ -97,22 +140,41 @@ func (p *GoSessionProcessor) parseTimingDataStream(ctx context.Context, sessionP
 					meta := driverByNum[racing]
 					compound, tyreLife := stintForLap(stintMap[meta.Abbr], next.Lap)
 					phase := qualifyingPhaseAt(phaseTimeline, ts)
-					lapsOut = append(lapsOut, map[string]any{
+					lapOut := map[string]any{
 						"driver":           meta.Abbr,
 						"lap_number":       next.Lap,
 						"position":         next.Position,
 						"lap_time":         lastLapTime,
 						"time":             round3(ts),
 						"qualifying_phase": phase,
-						"sector1":          nil,
-						"sector2":          nil,
-						"sector3":          nil,
 						"compound":         compound,
 						"tyre_life":        tyreLife,
 						"pit_in":           next.InPit,
 						"pit_out":          next.PitOut,
-					})
+					}
+					assignLapSectorFields(lapOut, sectors, true)
+					lapsOut = append(lapsOut, lapOut)
+					pending = pendingLapSectorUpdate{
+						Lap:       next.Lap,
+						Index:     len(lapsOut) - 1,
+						ExpiresAt: ts + 5.0,
+						Sectors:   sectors,
+					}
+					pendingLapByDriver[racing] = pending
+					hasPending = true
 				}
+			}
+
+			if hasPending && (pendingUpdated || sectorsUpdated) {
+				if idx := pending.Index; idx >= 0 && idx < len(lapsOut) {
+					assignLapSectorFields(lapsOut[idx], pending.Sectors, false)
+				}
+			}
+			// Prevent stale previous-lap values from leaking into the next lap.
+			if prevLap > 0 && next.Lap > prevLap {
+				sectorByDriver[racing] = [3]lapSectorState{}
+			} else {
+				sectorByDriver[racing] = sectors
 			}
 		}
 	}
@@ -128,6 +190,182 @@ func (p *GoSessionProcessor) parseTimingDataStream(ctx context.Context, sessionP
 		return asInt(lapsOut[i]["lap_number"]) < asInt(lapsOut[j]["lap_number"])
 	})
 	return perDriver, lapsOut, current, nil
+}
+
+func assignLapSectorFields(dst map[string]any, sectors [3]lapSectorState, overwrite bool) {
+	timeKeys := []string{"sector1", "sector2", "sector3"}
+	colorKeys := []string{"sector1_color", "sector2_color", "sector3_color"}
+	for i := 0; i < 3; i++ {
+		sector := sectors[i]
+		if overwrite {
+			dst[timeKeys[i]] = nilIfEmptyString(sector.Time)
+			dst[colorKeys[i]] = nilIfEmptyString(sector.Color)
+			continue
+		}
+		if strings.TrimSpace(sector.Time) != "" {
+			dst[timeKeys[i]] = sector.Time
+		}
+		if strings.TrimSpace(sector.Color) != "" {
+			dst[colorKeys[i]] = sector.Color
+		}
+	}
+}
+
+func mergeSectorStates(base [3]lapSectorState, raw any) ([3]lapSectorState, bool) {
+	updated := false
+	assign := func(index int, value any) {
+		if index < 0 || index >= len(base) {
+			return
+		}
+		sector := base[index]
+		if parsed := parseSectorTimeValue(value); parsed != "" && parsed != sector.Time {
+			sector.Time = parsed
+			updated = true
+		}
+		if m, ok := value.(map[string]any); ok {
+			prevColor := sector.Color
+			overallUpdated := false
+			personalUpdated := false
+			if rawOverall, exists := m["OverallFastest"]; exists {
+				sector.HasOverall = true
+				sector.OverallFastest = asBool(rawOverall)
+				overallUpdated = true
+			}
+			if rawPersonal, exists := m["PersonalFastest"]; exists {
+				sector.HasPersonal = true
+				sector.PersonalFastest = asBool(rawPersonal)
+				personalUpdated = true
+			}
+
+			// Overall-fastest implies personal-fastest for that sector sample.
+			if sector.HasOverall && sector.OverallFastest && !personalUpdated && !sector.HasPersonal {
+				sector.HasPersonal = true
+				sector.PersonalFastest = true
+			}
+			// When purple is taken away, official stream can emit only OverallFastest=false.
+			// Keep that sector green unless PersonalFastest is explicitly false.
+			if overallUpdated && !sector.OverallFastest && !personalUpdated && prevColor == "purple" {
+				sector.HasPersonal = true
+				sector.PersonalFastest = true
+			}
+
+			nextColor := resolveSectorColor(prevColor, sector)
+			if nextColor != sector.Color {
+				sector.Color = nextColor
+				updated = true
+			}
+		}
+		base[index] = sector
+	}
+
+	switch v := raw.(type) {
+	case []any:
+		for idx, item := range v {
+			assign(idx, item)
+		}
+	case map[string]any:
+		keys := make([]int, 0, len(v))
+		items := make(map[int]any, len(v))
+		for key, item := range v {
+			idx, err := strconv.Atoi(strings.TrimSpace(key))
+			if err != nil {
+				continue
+			}
+			keys = append(keys, idx)
+			items[idx] = item
+		}
+		sort.Ints(keys)
+		for _, idx := range keys {
+			assign(idx, items[idx])
+		}
+	}
+
+	return base, updated
+}
+
+func resolveSectorColor(prevColor string, sector lapSectorState) string {
+	if sector.HasOverall && sector.OverallFastest {
+		return "purple"
+	}
+	if sector.HasPersonal && sector.PersonalFastest {
+		return "green"
+	}
+	if sector.HasPersonal && !sector.PersonalFastest {
+		return "yellow"
+	}
+	if sector.HasOverall && !sector.OverallFastest {
+		if prevColor == "purple" || prevColor == "green" {
+			return "green"
+		}
+		return prevColor
+	}
+	return prevColor
+}
+
+func mergeSectorTimes(base [3]string, raw any) [3]string {
+	assign := func(index int, value any) {
+		if index < 0 || index >= len(base) {
+			return
+		}
+		sector := parseSectorTimeValue(value)
+		if sector != "" {
+			base[index] = sector
+		}
+	}
+
+	switch v := raw.(type) {
+	case []any:
+		for idx, item := range v {
+			assign(idx, item)
+		}
+	case map[string]any:
+		keys := make([]int, 0, len(v))
+		items := make(map[int]any, len(v))
+		for key, item := range v {
+			idx, err := strconv.Atoi(strings.TrimSpace(key))
+			if err != nil {
+				continue
+			}
+			keys = append(keys, idx)
+			items[idx] = item
+		}
+		sort.Ints(keys)
+		for _, idx := range keys {
+			assign(idx, items[idx])
+		}
+	}
+
+	return base
+}
+
+func parseSectorTimeValue(raw any) string {
+	switch v := raw.(type) {
+	case map[string]any:
+		val := strings.TrimSpace(asString(v["Value"]))
+		if val == "" {
+			return ""
+		}
+		if _, ok := parseLapTimeToSeconds(val); !ok {
+			return ""
+		}
+		return val
+	default:
+		val := strings.TrimSpace(asString(raw))
+		if val == "" {
+			return ""
+		}
+		if _, ok := parseLapTimeToSeconds(val); !ok {
+			return ""
+		}
+		return val
+	}
+}
+
+func nilIfEmptyString(v string) any {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	return v
 }
 
 func (p *GoSessionProcessor) parseSessionDataStream(ctx context.Context, sessionPath string, feed sessionFeed) ([]qualifyingPhasePoint, error) {

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,6 +30,61 @@ func TestParseStreamTimestamp(t *testing.T) {
 	}
 	if _, ok := parseStreamTimestamp("bad"); ok {
 		t.Fatalf("expected parse failure for malformed timestamp")
+	}
+}
+
+func TestMergeSectorTimesFromMapAndArray(t *testing.T) {
+	empty := [3]string{}
+	mapped := mergeSectorTimes(empty, map[string]any{
+		"0": map[string]any{"Value": "30.111"},
+		"1": map[string]any{"Value": "28.222"},
+		"2": map[string]any{"Value": "27.333"},
+	})
+	if mapped[0] != "30.111" || mapped[1] != "28.222" || mapped[2] != "27.333" {
+		t.Fatalf("unexpected mapped sectors: %#v", mapped)
+	}
+
+	updated := mergeSectorTimes(mapped, []any{
+		map[string]any{"Value": "30.000"},
+		nil,
+		map[string]any{"Value": "27.100"},
+	})
+	if updated[0] != "30.000" || updated[1] != "28.222" || updated[2] != "27.100" {
+		t.Fatalf("unexpected updated sectors: %#v", updated)
+	}
+}
+
+func TestMergeSectorStatesPurpleDowngradesToGreenWhenOverallClearsWithoutPersonalFlag(t *testing.T) {
+	base := [3]lapSectorState{}
+
+	next, changed := mergeSectorStates(base, map[string]any{
+		"0": map[string]any{"Value": "31.855", "OverallFastest": true},
+	})
+	if !changed {
+		t.Fatalf("expected sector state change on first update")
+	}
+	if next[0].Color != "purple" {
+		t.Fatalf("expected purple after overall fastest, got %q", next[0].Color)
+	}
+
+	next, changed = mergeSectorStates(next, map[string]any{
+		"0": map[string]any{"OverallFastest": false},
+	})
+	if !changed {
+		t.Fatalf("expected sector state change when overall fastest clears")
+	}
+	if next[0].Color != "green" {
+		t.Fatalf("expected green after purple is taken without personal=false, got %q", next[0].Color)
+	}
+
+	next, changed = mergeSectorStates(next, map[string]any{
+		"0": map[string]any{"PersonalFastest": false},
+	})
+	if !changed {
+		t.Fatalf("expected sector state change when personal fastest becomes false")
+	}
+	if next[0].Color != "yellow" {
+		t.Fatalf("expected yellow after explicit personal=false, got %q", next[0].Color)
 	}
 }
 
@@ -140,6 +196,471 @@ func TestParsePositionStreamSkipsZeroPlaceholderPoints(t *testing.T) {
 	}
 	if got := len(out["1"]); got != 1 {
 		t.Fatalf("driver 1 samples: got %d want 1", got)
+	}
+}
+
+func TestParseTimingDataStreamCapturesOfficialSectorTimes(t *testing.T) {
+	stream := strings.Join([]string{
+		`00:00:10.000{"Lines":{"44":{"RacingNumber":"44","NumberOfLaps":1,"Sectors":{"0":{"Value":"30.111","PersonalFastest":true}}}}}`,
+		`00:00:20.000{"Lines":{"44":{"RacingNumber":"44","NumberOfLaps":1,"Sectors":{"1":{"Value":"28.222","OverallFastest":true,"PersonalFastest":true}}}}}`,
+		`00:00:30.000{"Lines":{"44":{"RacingNumber":"44","NumberOfLaps":1,"Sectors":{"2":{"Value":"27.333","OverallFastest":false,"PersonalFastest":false}}}}}`,
+		`00:00:31.000{"Lines":{"44":{"RacingNumber":"44","NumberOfLaps":1,"LastLapTime":{"Value":"1:25.666"}}}}`,
+	}, "\n")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/session/TimingData.jsonStream" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, stream)
+	}))
+	defer srv.Close()
+
+	p := &GoSessionProcessor{
+		baseURL:    srv.URL,
+		httpClient: srv.Client(),
+	}
+
+	driverByNum := map[string]driverMeta{
+		"44": {Number: "44", Abbr: "HAM"},
+	}
+	_, laps, _, err := p.parseTimingDataStream(
+		context.Background(),
+		"session",
+		sessionFeed{StreamPath: "TimingData.jsonStream"},
+		driverByNum,
+		map[string]any{},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("parseTimingDataStream failed: %v", err)
+	}
+	if len(laps) != 1 {
+		t.Fatalf("expected 1 lap, got %d", len(laps))
+	}
+	if asString(laps[0]["driver"]) != "HAM" {
+		t.Fatalf("unexpected driver: %v", laps[0]["driver"])
+	}
+	if asString(laps[0]["lap_time"]) != "1:25.666" {
+		t.Fatalf("unexpected lap_time: %v", laps[0]["lap_time"])
+	}
+	if asString(laps[0]["sector1"]) != "30.111" || asString(laps[0]["sector2"]) != "28.222" || asString(laps[0]["sector3"]) != "27.333" {
+		t.Fatalf("unexpected sectors: s1=%v s2=%v s3=%v", laps[0]["sector1"], laps[0]["sector2"], laps[0]["sector3"])
+	}
+	if asString(laps[0]["sector1_color"]) != "green" || asString(laps[0]["sector2_color"]) != "purple" || asString(laps[0]["sector3_color"]) != "yellow" {
+		t.Fatalf("unexpected sector colors: s1=%v s2=%v s3=%v", laps[0]["sector1_color"], laps[0]["sector2_color"], laps[0]["sector3_color"])
+	}
+}
+
+func TestParseTimingDataStreamAppliesLateSectorColorUpdateToCompletedLap(t *testing.T) {
+	stream := strings.Join([]string{
+		`00:00:10.000{"Lines":{"12":{"RacingNumber":"12","NumberOfLaps":12,"Sectors":{"0":{"Value":"31.855","PersonalFastest":true},"1":{"Value":"39.439","OverallFastest":true,"PersonalFastest":true},"2":{"Value":"17.484","PersonalFastest":false}}}}}`,
+		`00:00:11.000{"Lines":{"12":{"RacingNumber":"12","NumberOfLaps":12,"LastLapTime":{"Value":"1:28.778"}}}}`,
+		`00:00:11.300{"Lines":{"12":{"RacingNumber":"12","Sectors":{"2":{"OverallFastest":true,"PersonalFastest":true}}}}}`,
+	}, "\n")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/session/TimingData.jsonStream" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, stream)
+	}))
+	defer srv.Close()
+
+	p := &GoSessionProcessor{
+		baseURL:    srv.URL,
+		httpClient: srv.Client(),
+	}
+	driverByNum := map[string]driverMeta{
+		"12": {Number: "12", Abbr: "ANT"},
+	}
+
+	_, laps, _, err := p.parseTimingDataStream(
+		context.Background(),
+		"session",
+		sessionFeed{StreamPath: "TimingData.jsonStream"},
+		driverByNum,
+		map[string]any{},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("parseTimingDataStream failed: %v", err)
+	}
+	if len(laps) != 1 {
+		t.Fatalf("expected 1 lap, got %d", len(laps))
+	}
+
+	lap := laps[0]
+	if asString(lap["lap_time"]) != "1:28.778" {
+		t.Fatalf("unexpected lap_time: %v", lap["lap_time"])
+	}
+	if asString(lap["sector1_color"]) != "green" {
+		t.Fatalf("unexpected sector1 color: %v", lap["sector1_color"])
+	}
+	if asString(lap["sector2_color"]) != "purple" {
+		t.Fatalf("unexpected sector2 color: %v", lap["sector2_color"])
+	}
+	if asString(lap["sector3_color"]) != "purple" {
+		t.Fatalf("expected late update to mark sector3 purple, got %v", lap["sector3_color"])
+	}
+}
+
+func TestBuildQ3LinesJSONUsesOfficialSectorColors(t *testing.T) {
+	drivers := []driverMeta{
+		{Number: "1", Abbr: "ANT", Team: "Mercedes", Color: "00D2BE"},
+		{Number: "2", Abbr: "RUS", Team: "Mercedes", Color: "00D2BE"},
+	}
+	byNum := map[string]driverMeta{
+		"1": drivers[0],
+		"2": drivers[1],
+	}
+
+	laps := []map[string]any{
+		{
+			"driver":           "ANT",
+			"lap_number":       1,
+			"lap_time":         "1:00.000",
+			"time":             60.0,
+			"qualifying_phase": "Q3",
+			"sector1":          "20.000",
+			"sector2":          "20.500",
+			"sector3":          "19.500",
+			"sector1_color":    "yellow",
+			"sector2_color":    "green",
+			"sector3_color":    "yellow",
+		},
+		{
+			"driver":           "ANT",
+			"lap_number":       2,
+			"lap_time":         "0:59.500",
+			"time":             120.0,
+			"qualifying_phase": "Q3",
+			"sector1":          "20.000",
+			"sector2":          "20.000",
+			"sector3":          "19.500",
+			"sector1_color":    "green",
+			"sector2_color":    "purple",
+			"sector3_color":    "purple",
+		},
+		{
+			"driver":           "RUS",
+			"lap_number":       1,
+			"lap_time":         "1:00.200",
+			"time":             60.0,
+			"qualifying_phase": "Q3",
+			"sector1":          "20.000",
+			"sector2":          "20.200",
+			"sector3":          "20.000",
+			"sector1_color":    "purple",
+			"sector2_color":    "green",
+			"sector3_color":    "green",
+		},
+	}
+
+	buildLap := func(startT, endT, xOff, yOff float64) []posSample {
+		out := make([]posSample, 0, 180)
+		total := 180
+		for i := 0; i < total; i++ {
+			ratio := float64(i) / float64(total-1)
+			theta := ratio * 2 * 3.141592653589793
+			out = append(out, posSample{
+				T: startT + ratio*(endT-startT),
+				X: xOff + math.Cos(theta),
+				Y: yOff + math.Sin(theta),
+			})
+		}
+		return out
+	}
+
+	pos := map[string][]posSample{
+		"1": buildLap(60.5, 120.0, 0, 0), // ANT best lap (lap 2)
+		"2": buildLap(0.0, 60.0, 2, 2),   // RUS best lap (lap 1)
+	}
+	timing := map[string][]timingState{
+		"1": {{T: 60.0, Lap: 1}, {T: 120.0, Lap: 2}},
+		"2": {{T: 60.0, Lap: 1}},
+	}
+	track := map[string]any{
+		"norm": map[string]any{
+			"x_min": 0.0,
+			"y_min": 0.0,
+			"scale": 1.0,
+		},
+	}
+
+	out := buildQ3LinesJSON(drivers, byNum, laps, pos, timing, track)
+	if out == nil {
+		t.Fatalf("expected q3 lines output")
+	}
+	rows, ok := out["drivers"].([]map[string]any)
+	if !ok || len(rows) != 2 {
+		t.Fatalf("expected 2 drivers in q3 output, got %#v", out["drivers"])
+	}
+
+	var antColors, rusColors map[string]any
+	for _, row := range rows {
+		abbr := asString(row["abbr"])
+		colors, _ := row["sector_colors"].(map[string]any)
+		if abbr == "ANT" {
+			antColors = colors
+		}
+		if abbr == "RUS" {
+			rusColors = colors
+		}
+	}
+	if antColors == nil || rusColors == nil {
+		t.Fatalf("missing sector colors for ANT/RUS")
+	}
+
+	if asString(antColors["s1"]) != "green" || asString(antColors["s2"]) != "purple" || asString(antColors["s3"]) != "purple" {
+		t.Fatalf("ANT colors should come from official lap payload, got %#v", antColors)
+	}
+	if asString(rusColors["s1"]) != "purple" || asString(rusColors["s2"]) != "green" || asString(rusColors["s3"]) != "green" {
+		t.Fatalf("RUS colors should come from official lap payload, got %#v", rusColors)
+	}
+}
+
+func TestBuildQ3LinesJSONFallbacksMissingSectorColorsWithinQ3(t *testing.T) {
+	drivers := []driverMeta{
+		{Number: "1", Abbr: "ANT", Team: "Mercedes", Color: "00D2BE"},
+		{Number: "2", Abbr: "RUS", Team: "Mercedes", Color: "00D2BE"},
+		{Number: "3", Abbr: "PIA", Team: "McLaren", Color: "FF8000"},
+	}
+	byNum := map[string]driverMeta{
+		"1": drivers[0],
+		"2": drivers[1],
+		"3": drivers[2],
+	}
+
+	laps := []map[string]any{
+		// ANT best lap (fallback colors should apply on s1/s2; s3 is official and must be preserved)
+		{
+			"driver":           "ANT",
+			"lap_number":       1,
+			"lap_time":         "1:28.700",
+			"time":             60.0,
+			"qualifying_phase": "Q3",
+			"sector1":          "30.000",
+			"sector2":          "40.000",
+			"sector3":          "18.000",
+			"sector3_color":    "yellow",
+		},
+		{
+			"driver":           "ANT",
+			"lap_number":       2,
+			"lap_time":         "1:29.000",
+			"time":             120.0,
+			"qualifying_phase": "Q3",
+			"sector1":          "30.200",
+			"sector2":          "39.500",
+			"sector3":          "18.200",
+		},
+		// RUS ties ANT on sector1 but slower lap, so RUS should be green (single purple owner rule).
+		{
+			"driver":           "RUS",
+			"lap_number":       1,
+			"lap_time":         "1:29.000",
+			"time":             60.0,
+			"qualifying_phase": "Q3",
+			"sector1":          "30.000",
+			"sector2":          "39.900",
+			"sector3":          "18.100",
+		},
+		{
+			"driver":           "RUS",
+			"lap_number":       2,
+			"lap_time":         "1:29.500",
+			"time":             120.0,
+			"qualifying_phase": "Q3",
+			"sector1":          "30.300",
+			"sector2":          "39.800",
+			"sector3":          "18.300",
+		},
+		// PIA has one valid Q3 lap; missing colors should fallback to green.
+		{
+			"driver":           "PIA",
+			"lap_number":       1,
+			"lap_time":         "1:29.200",
+			"time":             60.0,
+			"qualifying_phase": "Q3",
+			"sector1":          "30.400",
+			"sector2":          "40.100",
+			"sector3":          "18.400",
+		},
+	}
+
+	buildLap := func(startT, endT, xOff, yOff float64) []posSample {
+		out := make([]posSample, 0, 180)
+		total := 180
+		for i := 0; i < total; i++ {
+			ratio := float64(i) / float64(total-1)
+			theta := ratio * 2 * 3.141592653589793
+			out = append(out, posSample{
+				T: startT + ratio*(endT-startT),
+				X: xOff + math.Cos(theta),
+				Y: yOff + math.Sin(theta),
+			})
+		}
+		return out
+	}
+
+	pos := map[string][]posSample{
+		"1": buildLap(0.0, 60.0, 0, 0),
+		"2": buildLap(0.0, 60.0, 2, 2),
+		"3": buildLap(0.0, 60.0, 4, 4),
+	}
+	timing := map[string][]timingState{
+		"1": {{T: 60.0, Lap: 1}, {T: 120.0, Lap: 2}},
+		"2": {{T: 60.0, Lap: 1}, {T: 120.0, Lap: 2}},
+		"3": {{T: 60.0, Lap: 1}},
+	}
+	track := map[string]any{
+		"norm": map[string]any{
+			"x_min": 0.0,
+			"y_min": 0.0,
+			"scale": 1.0,
+		},
+	}
+
+	out := buildQ3LinesJSON(drivers, byNum, laps, pos, timing, track)
+	if out == nil {
+		t.Fatalf("expected q3 lines output")
+	}
+	rows, ok := out["drivers"].([]map[string]any)
+	if !ok || len(rows) != 3 {
+		t.Fatalf("expected 3 drivers in q3 output, got %#v", out["drivers"])
+	}
+
+	colorsByAbbr := map[string]map[string]any{}
+	for _, row := range rows {
+		abbr := asString(row["abbr"])
+		colors, _ := row["sector_colors"].(map[string]any)
+		colorsByAbbr[abbr] = colors
+	}
+
+	ant := colorsByAbbr["ANT"]
+	rus := colorsByAbbr["RUS"]
+	pia := colorsByAbbr["PIA"]
+	if ant == nil || rus == nil || pia == nil {
+		t.Fatalf("missing sector colors for ANT/RUS/PIA: %#v", colorsByAbbr)
+	}
+
+	if asString(ant["s1"]) != "purple" {
+		t.Fatalf("ANT S1 expected purple via fallback tie-break, got %v", ant["s1"])
+	}
+	if asString(rus["s1"]) != "green" {
+		t.Fatalf("RUS S1 expected green (tie loser), got %v", rus["s1"])
+	}
+	if asString(ant["s2"]) != "yellow" {
+		t.Fatalf("ANT S2 expected yellow (not driver PB), got %v", ant["s2"])
+	}
+	if asString(pia["s1"]) != "green" || asString(pia["s2"]) != "green" || asString(pia["s3"]) != "green" {
+		t.Fatalf("PIA sectors expected green as single-lap fallback, got %#v", pia)
+	}
+	if asString(ant["s3"]) != "yellow" {
+		t.Fatalf("ANT S3 official color should be preserved as yellow, got %v", ant["s3"])
+	}
+}
+
+func TestBuildQ3LinesJSONAlignsDriverSamplesToTrackAnchor(t *testing.T) {
+	drivers := []driverMeta{
+		{Number: "1", Abbr: "ANT", Team: "Mercedes", Color: "00D2BE"},
+		{Number: "2", Abbr: "RUS", Team: "Mercedes", Color: "00D2BE"},
+	}
+	byNum := map[string]driverMeta{
+		"1": drivers[0],
+		"2": drivers[1],
+	}
+	laps := []map[string]any{
+		{
+			"driver":           "ANT",
+			"lap_number":       1,
+			"lap_time":         "1:00.000",
+			"time":             60.0,
+			"qualifying_phase": "Q3",
+			"sector1":          "20.000",
+			"sector2":          "20.000",
+			"sector3":          "20.000",
+		},
+		{
+			"driver":           "RUS",
+			"lap_number":       1,
+			"lap_time":         "1:00.200",
+			"time":             60.2,
+			"qualifying_phase": "Q3",
+			"sector1":          "20.100",
+			"sector2":          "20.000",
+			"sector3":          "20.100",
+		},
+	}
+
+	buildLoop := func(startT, endT, phase float64) []posSample {
+		points := make([]posSample, 0, 180)
+		const total = 180
+		for i := 0; i < total; i++ {
+			progress := float64(i) / float64(total-1)
+			theta := math.Mod(progress+phase, 1.0) * 2 * math.Pi
+			points = append(points, posSample{
+				T: startT + progress*(endT-startT),
+				X: math.Cos(theta),
+				Y: math.Sin(theta),
+			})
+		}
+		return points
+	}
+
+	pos := map[string][]posSample{
+		// ANT already starts near track start/finish anchor (raw x=1,y=0).
+		"1": buildLoop(0.0, 60.0, 0.0),
+		// RUS starts half a lap away; without anchor rotation this appears phase-shifted.
+		"2": buildLoop(0.0, 60.2, 0.5),
+	}
+	timing := map[string][]timingState{
+		"1": {{T: 60.0, Lap: 1}},
+		"2": {{T: 60.2, Lap: 1}},
+	}
+	track := map[string]any{
+		"track_points": []any{
+			map[string]any{"x": 1.0, "y": 0.5},
+		},
+		"norm": map[string]any{
+			"x_min": -1.0,
+			"y_min": -1.0,
+			"scale": 2.0,
+		},
+	}
+
+	out := buildQ3LinesJSON(drivers, byNum, laps, pos, timing, track)
+	if out == nil {
+		t.Fatalf("expected q3 lines output")
+	}
+	rows, ok := out["drivers"].([]map[string]any)
+	if !ok || len(rows) != 2 {
+		t.Fatalf("expected 2 drivers in q3 output, got %#v", out["drivers"])
+	}
+
+	firstXByAbbr := map[string]float64{}
+	firstYByAbbr := map[string]float64{}
+	for _, row := range rows {
+		abbr := asString(row["abbr"])
+		samples, _ := row["samples"].([]map[string]any)
+		if len(samples) == 0 {
+			t.Fatalf("expected non-empty samples for %s", abbr)
+		}
+		firstXByAbbr[abbr] = asFloat(samples[0]["x"], -1)
+		firstYByAbbr[abbr] = asFloat(samples[0]["y"], -1)
+	}
+
+	antX, antOK := firstXByAbbr["ANT"]
+	rusX, rusOK := firstXByAbbr["RUS"]
+	if !antOK || !rusOK {
+		t.Fatalf("missing first sample positions: %#v", firstXByAbbr)
+	}
+	antY := firstYByAbbr["ANT"]
+	rusY := firstYByAbbr["RUS"]
+	if math.Abs(antX-rusX) > 0.03 || math.Abs(antY-rusY) > 0.03 {
+		t.Fatalf("expected both drivers aligned to the same start anchor; ANT=(%.3f,%.3f) RUS=(%.3f,%.3f)", antX, antY, rusX, rusY)
 	}
 }
 

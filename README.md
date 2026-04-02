@@ -43,6 +43,7 @@ Licensing B.V.
 - **Pit position prediction** estimates where a driver would rejoin if they pitted now, with predicted gap ahead and behind, using precomputed pit loss times per circuit with Safety Car and Virtual Safety Car adjustments
 - **Telemetry** for unlimited drivers showing speed, throttle, brake, gear, and DRS (2025 and earlier) plotted against track distance, with a moveable side panel for 3+ driver comparisons
 - **Lap Analysis** (Beta) compare lap times for up to two drivers with a line chart and lap-by-lap history, with pit stop and safety car periods highlighted. Race replay only
+- **Qualifying Lap Compare** compare two best Q3 laps (`Q` / `SQ`) with progressive racing lines, directional car markers, live signed delta, and per-sector timing/colors
 - **Picture-in-Picture** mode for a compact floating window with track map, race control, leaderboard, and telemetry
 - **Weather data** including air and track temperature, humidity, wind, and rainfall status
 - **Track status flags** for green, yellow, Safety Car, Virtual Safety Car, and red flag conditions

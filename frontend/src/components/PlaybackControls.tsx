@@ -139,7 +139,7 @@ export default function PlaybackControls({
     >
       <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-2 bg-f1-border rounded-full">
         <div
-          className="h-full bg-f1-red rounded-full transition-all duration-100 relative"
+          className="h-full bg-f1-red rounded-full relative"
           style={{ width: `${progress}%` }}
         >
           <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />

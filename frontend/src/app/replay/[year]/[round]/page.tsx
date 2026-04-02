@@ -70,6 +70,14 @@ interface Q3LineDriver {
   lap_number: number;
   lap_time: string;
   lap_time_seconds: number;
+  sector1?: string | null;
+  sector2?: string | null;
+  sector3?: string | null;
+  sector_colors?: {
+    s1?: "purple" | "green" | "yellow" | null;
+    s2?: "purple" | "green" | "yellow" | null;
+    s3?: "purple" | "green" | "yellow" | null;
+  } | null;
   phase: "Q3";
   samples: Q3LineSample[];
 }
@@ -190,6 +198,89 @@ function timeAtProgress(samples: Q3LineSample[], targetProgress: number, lapTime
   }
 
   return mapSampleToReplayTime(samples, lapTimeSeconds, last.t);
+}
+
+function parseTimingValueToSeconds(raw: string | null | undefined): number | null {
+  const value = (raw || "").trim();
+  if (!value) return null;
+  const parts = value.split(":");
+  if (parts.length === 1) {
+    const sec = Number.parseFloat(parts[0]);
+    return Number.isFinite(sec) && sec >= 0 ? sec : null;
+  }
+  if (parts.length === 2) {
+    const mins = Number.parseInt(parts[0], 10);
+    const sec = Number.parseFloat(parts[1]);
+    if (!Number.isFinite(mins) || !Number.isFinite(sec) || mins < 0 || sec < 0) return null;
+    return mins * 60 + sec;
+  }
+  return null;
+}
+
+function rotateQ3SamplesToAnchor(samples: Q3LineSample[], anchor: { x: number; y: number } | null): Q3LineSample[] {
+  if (!samples || samples.length === 0) return [];
+  if (!anchor || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y)) return [...samples];
+
+  let bestIdx = 0;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < samples.length; i++) {
+    const dx = samples[i].x - anchor.x;
+    const dy = samples[i].y - anchor.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIdx = i;
+    }
+  }
+  if (bestIdx === 0) return [...samples];
+  return [...samples.slice(bestIdx), ...samples.slice(0, bestIdx)];
+}
+
+function normalizeQ3SamplesForPlayback(
+  samples: Q3LineSample[],
+  lapTimeSeconds: number,
+  anchor: { x: number; y: number } | null = null,
+): Q3LineSample[] {
+  if (!samples || samples.length === 0 || !Number.isFinite(lapTimeSeconds) || lapTimeSeconds <= 0) return samples || [];
+  const ordered = rotateQ3SamplesToAnchor(samples, anchor);
+  if (ordered.length === 1) {
+    return [{ ...ordered[0], p: 0, t: 0 }];
+  }
+
+  const cumulative: number[] = new Array(ordered.length).fill(0);
+  let totalDist = 0;
+  for (let i = 1; i < ordered.length; i++) {
+    const dx = ordered[i].x - ordered[i - 1].x;
+    const dy = ordered[i].y - ordered[i - 1].y;
+    totalDist += Math.hypot(dx, dy);
+    cumulative[i] = totalDist;
+  }
+  const fallbackDen = Math.max(ordered.length - 1, 1);
+  let prevT = 0;
+  return ordered.map((sample, idx) => {
+    const rawProgress = totalDist > 1e-6 ? cumulative[idx] / totalDist : idx / fallbackDen;
+    const p = Math.max(0, Math.min(1, rawProgress));
+    let t = p * lapTimeSeconds;
+    if (idx > 0 && t < prevT) {
+      t = prevT;
+    }
+    prevT = t;
+    return { ...sample, p, t };
+  });
+}
+
+interface Q3SectorCell {
+  raw: string;
+  seconds: number | null;
+  split: number | null;
+  revealed: boolean;
+  tone: "purple" | "green" | "yellow" | null;
+}
+
+interface Q3SectorRow {
+  s1: Q3SectorCell;
+  s2: Q3SectorCell;
+  s3: Q3SectorCell;
 }
 
 function Q3LegendCar({ color, outlined = false }: { color: string; outlined?: boolean }) {
@@ -555,36 +646,44 @@ export default function ReplayPage() {
     const c2 = normalizeHexColor(d2.color);
     const sameColor = c1 === c2;
     const c2Adjusted = sameColor ? shiftHexColor(c2, 70) : c2;
+    const trackAnchor =
+      trackData?.track_points && trackData.track_points.length > 0
+        ? { x: trackData.track_points[0].x, y: trackData.track_points[0].y }
+        : null;
+    const d1Samples = normalizeQ3SamplesForPlayback(d1.samples || [], d1.lap_time_seconds, trackAnchor);
+    const d2Samples = normalizeQ3SamplesForPlayback(d2.samples || [], d2.lap_time_seconds, trackAnchor);
     return [
       {
         abbr: d1.abbr,
         color: c1,
         lapTimeSeconds: d1.lap_time_seconds,
-        samples: d1.samples,
+        samples: d1Samples,
       },
       {
         abbr: d2.abbr,
         color: c2Adjusted,
         lapTimeSeconds: d2.lap_time_seconds,
-        samples: d2.samples,
+        samples: d2Samples,
         lineDash: sameColor ? [8, 6] : undefined,
         markerStyle: sameColor ? "outlined" : "solid",
       },
     ];
-  }, [isQualifyingSession, q3CompareMode, q3SelectedDrivers, q3DriverMap]);
+  }, [isQualifyingSession, q3CompareMode, q3SelectedDrivers, q3DriverMap, trackData]);
 
   const q3CompareActive = q3CompareMode && q3CompareLines.length === 2;
-  const q3TotalTime = useMemo(() => {
+  const q3ComputedTotalTime = useMemo(() => {
     if (!q3CompareActive) return 0;
     return Math.max(q3CompareLines[0].lapTimeSeconds, q3CompareLines[1].lapTimeSeconds, 0);
   }, [q3CompareActive, q3CompareLines]);
+  const [q3TotalTime, setQ3TotalTime] = useState(0);
   const [q3PlaybackPlaying, setQ3PlaybackPlaying] = useState(false);
   const [q3PlaybackSpeed, setQ3PlaybackSpeed] = useState(1);
   const [q3PlaybackTime, setQ3PlaybackTime] = useState(0);
   const [q3PlaybackFinished, setQ3PlaybackFinished] = useState(false);
   const q3LastTickRef = useRef<number | null>(null);
+  const q3EffectiveTotalTime = q3TotalTime > 0 ? q3TotalTime : q3ComputedTotalTime;
 
-  const q3LiveDelta = useMemo(() => {
+  const q3PlaybackSnapshot = useMemo(() => {
     if (q3CompareLines.length !== 2) return null;
     const a = q3CompareLines[0];
     const b = q3CompareLines[1];
@@ -600,30 +699,106 @@ export default function ReplayPage() {
 
     const aProgress = normalizeSampleProgress(a.samples, aState.p);
     const bProgress = normalizeSampleProgress(b.samples, bState.p);
-    const progressDiff = aProgress - bProgress;
-    const tie = Math.abs(progressDiff) < 1e-4;
-    const leader = tie ? null : (progressDiff > 0 ? a : b);
-    const trailer = leader ? (leader.abbr === a.abbr ? b : a) : null;
+    const compareProgress = Math.min(aProgress, bProgress);
+    const aAtCompare = timeAtProgress(a.samples, compareProgress, a.lapTimeSeconds);
+    const bAtCompare = timeAtProgress(b.samples, compareProgress, b.lapTimeSeconds);
 
-    let delta = 0;
-    if (leader && trailer) {
-      const leaderProgress = leader.abbr === a.abbr ? aProgress : bProgress;
-      const leaderTimeAtSameProgress = timeAtProgress(leader.samples, leaderProgress, leader.lapTimeSeconds);
-      const trailerTimeAtSameProgress = timeAtProgress(trailer.samples, leaderProgress, trailer.lapTimeSeconds);
-      if (leaderTimeAtSameProgress != null && trailerTimeAtSameProgress != null) {
-        delta = Math.max(0, trailerTimeAtSameProgress - leaderTimeAtSameProgress);
-      } else {
-        delta = Math.max(0, Math.abs(aNow - bNow));
-      }
-    }
-
-    const aheadText = leader ? `${leader.abbr} ahead` : "LEVEL";
+    // Signed as Driver1 - Driver2 (negative means Driver1 is faster).
+    const signedDelta = (aAtCompare ?? aNow) - (bAtCompare ?? bNow);
     return {
-      leaderAbbr: leader?.abbr ?? null,
-      deltaSeconds: delta,
-      text: `LIVE DELTA: +${delta.toFixed(3)}s • ${aheadText}`,
+      deltaSeconds: signedDelta,
     };
   }, [q3CompareLines, q3PlaybackTime]);
+
+  const q3LiveDelta = useMemo(() => {
+    if (!q3PlaybackSnapshot || q3CompareLines.length !== 2) return null;
+    const signed = q3PlaybackSnapshot.deltaSeconds;
+    const leader =
+      Math.abs(signed) < 5e-4
+        ? "LEVEL"
+        : signed < 0
+        ? `${q3CompareLines[0].abbr} ahead`
+        : `${q3CompareLines[1].abbr} ahead`;
+    return {
+      deltaSeconds: signed,
+      text: `${signed >= 0 ? "+" : ""}${signed.toFixed(3)}s • ${leader}`,
+    };
+  }, [q3PlaybackSnapshot, q3CompareLines]);
+
+  const q3SectorReveal = useMemo(() => {
+    const reveal = new Map<string, Q3SectorRow>();
+    for (const line of q3CompareLines) {
+      const meta = q3DriverMap.get(line.abbr);
+      if (!meta) continue;
+      const s1Raw = (meta.sector1 || "").trim();
+      const s2Raw = (meta.sector2 || "").trim();
+      const s3Raw = (meta.sector3 || "").trim();
+      const s1 = parseTimingValueToSeconds(s1Raw);
+      const s2 = parseTimingValueToSeconds(s2Raw);
+      const s3 = parseTimingValueToSeconds(s3Raw);
+      const split1 = s1;
+      const split2 = s1 != null && s2 != null ? s1 + s2 : null;
+      const split3 = s1 != null && s2 != null && s3 != null ? s1 + s2 + s3 : null;
+      const elapsed = Math.min(q3PlaybackTime, line.lapTimeSeconds);
+
+      const colors = meta.sector_colors || {};
+      const buildCell = (
+        raw: string,
+        seconds: number | null,
+        split: number | null,
+        tone: "purple" | "green" | "yellow" | null,
+      ): Q3SectorCell => {
+        const revealed = split != null && elapsed + 1e-3 >= split;
+        return {
+          raw,
+          seconds,
+          split,
+          revealed,
+          tone,
+        };
+      };
+
+      reveal.set(line.abbr, {
+        s1: buildCell(s1Raw, s1, split1, colors.s1 || null),
+        s2: buildCell(s2Raw, s2, split2, colors.s2 || null),
+        s3: buildCell(s3Raw, s3, split3, colors.s3 || null),
+      });
+    }
+    return reveal;
+  }, [q3CompareLines, q3DriverMap, q3PlaybackTime]);
+
+  const q3SectorDelta = useMemo(() => {
+    if (q3CompareLines.length !== 2) return null;
+    const aRow = q3SectorReveal.get(q3CompareLines[0].abbr);
+    const bRow = q3SectorReveal.get(q3CompareLines[1].abbr);
+    if (!aRow || !bRow) return null;
+
+    const compareSector = (aCell: Q3SectorCell, bCell: Q3SectorCell) => {
+      if (!aCell.revealed || !bCell.revealed || aCell.seconds == null || bCell.seconds == null) {
+        return { ready: false, text: "…", signed: null as number | null };
+      }
+      const signed = aCell.seconds - bCell.seconds; // Driver1 - Driver2
+      if (Math.abs(signed) < 5e-4) {
+        return { ready: true, text: "0.000", signed: 0 };
+      }
+      return { ready: true, text: `${signed >= 0 ? "+" : ""}${signed.toFixed(3)}`, signed };
+    };
+
+    return {
+      s1: compareSector(aRow.s1, bRow.s1),
+      s2: compareSector(aRow.s2, bRow.s2),
+      s3: compareSector(aRow.s3, bRow.s3),
+    };
+  }, [q3CompareLines, q3SectorReveal]);
+
+  const q3LapDelta = useMemo(() => {
+    if (q3CompareLines.length !== 2) return null;
+    const signed = q3CompareLines[0].lapTimeSeconds - q3CompareLines[1].lapTimeSeconds;
+    return {
+      signed,
+      text: `${signed >= 0 ? "+" : ""}${signed.toFixed(3)}`,
+    };
+  }, [q3CompareLines]);
 
   const q3PairSignature = useMemo(
     () => q3CompareLines.map((d) => `${d.abbr}:${d.lapTimeSeconds}`).join("|"),
@@ -635,17 +810,19 @@ export default function ReplayPage() {
       setQ3PlaybackPlaying(false);
       setQ3PlaybackTime(0);
       setQ3PlaybackFinished(false);
+      setQ3TotalTime(0);
       q3LastTickRef.current = null;
       return;
     }
     setQ3PlaybackPlaying(false);
     setQ3PlaybackTime(0);
     setQ3PlaybackFinished(false);
+    setQ3TotalTime(q3ComputedTotalTime);
     q3LastTickRef.current = null;
-  }, [q3CompareMode, q3PairSignature]);
+  }, [q3CompareMode, q3PairSignature, q3ComputedTotalTime]);
 
   useEffect(() => {
-    if (!q3CompareActive || !q3PlaybackPlaying || q3PlaybackFinished || q3TotalTime <= 0) {
+    if (!q3CompareActive || !q3PlaybackPlaying || q3PlaybackFinished || q3EffectiveTotalTime <= 0) {
       q3LastTickRef.current = null;
       return;
     }
@@ -660,11 +837,11 @@ export default function ReplayPage() {
 
       setQ3PlaybackTime((prev) => {
         const next = prev + deltaSeconds * Math.max(q3PlaybackSpeed, 0.25);
-        if (next >= q3TotalTime) {
+        if (next >= q3EffectiveTotalTime) {
           setQ3PlaybackPlaying(false);
           setQ3PlaybackFinished(true);
           q3LastTickRef.current = null;
-          return q3TotalTime;
+          return q3EffectiveTotalTime;
         }
         return next;
       });
@@ -674,17 +851,17 @@ export default function ReplayPage() {
 
     rafId = window.requestAnimationFrame(step);
     return () => window.cancelAnimationFrame(rafId);
-  }, [q3CompareActive, q3PlaybackPlaying, q3PlaybackFinished, q3PlaybackSpeed, q3TotalTime]);
+  }, [q3CompareActive, q3PlaybackPlaying, q3PlaybackFinished, q3PlaybackSpeed, q3EffectiveTotalTime]);
 
   const q3Play = useCallback(() => {
-    if (!q3CompareActive || q3TotalTime <= 0) return;
-    if (q3PlaybackFinished || q3PlaybackTime >= q3TotalTime) {
+    if (!q3CompareActive || q3EffectiveTotalTime <= 0) return;
+    if (q3PlaybackFinished || q3PlaybackTime >= q3EffectiveTotalTime) {
       setQ3PlaybackTime(0);
       setQ3PlaybackFinished(false);
     }
     q3LastTickRef.current = null;
     setQ3PlaybackPlaying(true);
-  }, [q3CompareActive, q3PlaybackFinished, q3PlaybackTime, q3TotalTime]);
+  }, [q3CompareActive, q3PlaybackFinished, q3PlaybackTime, q3EffectiveTotalTime]);
 
   const q3Pause = useCallback(() => {
     setQ3PlaybackPlaying(false);
@@ -692,15 +869,15 @@ export default function ReplayPage() {
   }, []);
 
   const q3Seek = useCallback((time: number) => {
-    const clamped = Math.max(0, Math.min(q3TotalTime, time));
+    const clamped = Math.max(0, Math.min(q3EffectiveTotalTime, time));
     setQ3PlaybackTime(clamped);
-    const reachedEnd = q3TotalTime > 0 && clamped >= q3TotalTime;
+    const reachedEnd = q3EffectiveTotalTime > 0 && clamped >= q3EffectiveTotalTime;
     setQ3PlaybackFinished(reachedEnd);
     if (reachedEnd) {
       setQ3PlaybackPlaying(false);
     }
     q3LastTickRef.current = null;
-  }, [q3TotalTime]);
+  }, [q3EffectiveTotalTime]);
 
   const q3Reset = useCallback(() => {
     setQ3PlaybackPlaying(false);
@@ -904,7 +1081,7 @@ export default function ReplayPage() {
   const mobileTeamAbbrHidden = isMobile && settings.showTeamAbbr && leaderboardWidthFull > (typeof window !== "undefined" ? window.innerWidth : 400);
   const leaderboardWidth = mobileTeamAbbrHidden ? leaderboardWidthFull - 28 : leaderboardWidthFull;
   const compareActive = q3CompareActive;
-  const controlsUseQ3 = q3CompareMode && isQualifyingSession;
+  const controlsUseQ3 = q3CompareActive;
   const replayTrackDrivers = drivers.filter((d) => !d.retired && !d.no_timing && !d.finished && (d.x !== 0 || d.y !== 0) && d.x > -0.5 && d.x < 1.5 && d.y > -0.5 && d.y < 1.5).map((d) => ({
     abbr: d.abbr,
     x: d.x,
@@ -1143,21 +1320,28 @@ export default function ReplayPage() {
               />
 
               {isQualifyingSession && (q3LinesResponse?.drivers?.length || 0) > 0 && (
-                <div className="absolute top-3 left-3 z-20 bg-f1-card/90 border border-f1-border rounded px-2 py-1.5 backdrop-blur-sm max-w-[280px]">
-                  <div className="flex items-center gap-2">
+                <div className={`absolute top-3 left-3 z-20 backdrop-blur-sm transition-all ${
+                  q3CompareMode
+                    ? "bg-f1-card/92 border border-f1-border rounded-lg shadow-lg px-2.5 py-2 w-[min(420px,calc(100vw-1.5rem))]"
+                    : "bg-f1-card/72 border border-f1-border/70 rounded-lg px-1.5 py-1.5"
+                }`}>
+                  <div className={`flex items-center ${q3CompareMode ? "gap-2" : "gap-1.5"}`}>
                     <button
                       onClick={() => setQ3CompareMode((v) => !v)}
                       disabled={(q3LinesResponse?.drivers?.length || 0) < 2}
-                      className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors ${
+                      className={`px-2.5 py-1.5 rounded-md text-[10px] font-extrabold uppercase tracking-wide border transition-colors ${
                         q3CompareMode
-                          ? "bg-f1-red border-f1-red text-white"
-                          : "bg-transparent border-f1-border text-f1-muted hover:text-white"
+                          ? "bg-f1-red border-f1-red text-white shadow-[0_0_0_1px_rgba(255,255,255,0.08)_inset]"
+                          : "bg-black/20 border-f1-border text-f1-muted hover:text-white hover:bg-black/35"
                       } disabled:opacity-50 disabled:cursor-not-allowed`}
                     >
-                      Q3 Lines
+                      Lap Compare
                     </button>
+                    {!q3CompareMode && (
+                      <span className="text-[10px] font-semibold text-f1-muted">Q3 best laps</span>
+                    )}
                     {q3CompareMode && q3LiveDelta && (
-                      <span className="text-[10px] font-bold text-white tabular-nums">{q3LiveDelta.text}</span>
+                      <span className="text-[10px] font-bold text-white tabular-nums">LIVE DELTA: {q3LiveDelta.text}</span>
                     )}
                   </div>
                   {q3CompareMode && (
@@ -1191,27 +1375,108 @@ export default function ReplayPage() {
                         </select>
                       </div>
                       {q3CompareLines.length === 2 && (
-                        <div className="space-y-1 pt-1">
-                          {q3CompareLines.map((line) => {
-                            const lineMeta = q3DriverMap.get(line.abbr);
-                            return (
-                              <div key={line.abbr} className="flex items-center gap-1 text-[10px] text-white">
-                                <span
-                                  className="inline-block w-5 border-t-2"
-                                  style={{
-                                    borderTopColor: line.color,
-                                    borderTopStyle: line.lineDash?.length ? "dashed" : "solid",
-                                  }}
-                                />
-                                <Q3LegendCar color={line.color} outlined={line.markerStyle === "outlined"} />
-                                <span className="font-bold">{line.abbr}</span>
-                                <span className="text-f1-muted">{lineMeta?.lap_time}</span>
-                                {q3LiveDelta?.leaderAbbr === line.abbr && (
-                                  <span className="ml-auto text-[9px] font-bold text-green-300">AHEAD</span>
-                                )}
-                              </div>
-                            );
-                          })}
+                        <div className="pt-1">
+                          <div className="overflow-hidden rounded border border-f1-border/70 bg-black/35">
+                            <div className="grid grid-cols-[minmax(90px,1.2fr)_0.85fr_0.85fr_0.85fr_1fr] gap-x-2 bg-black/45 px-2 py-1 text-[8px] font-semibold uppercase tracking-wide text-f1-muted">
+                              <span>Best Lap</span>
+                              <span className="text-center">Sector 1</span>
+                              <span className="text-center">Sector 2</span>
+                              <span className="text-center">Sector 3</span>
+                              <span className="text-right">Lap Time</span>
+                            </div>
+                            {q3CompareLines.map((line, idx) => {
+                              const lineMeta = q3DriverMap.get(line.abbr);
+                              const sectors = q3SectorReveal.get(line.abbr);
+                              const cells: Array<Q3SectorCell | undefined> = [sectors?.s1, sectors?.s2, sectors?.s3];
+                              const sectorTextClass = (cell: Q3SectorCell | undefined) => {
+                                if (!cell || !cell.raw || !cell.revealed) return "text-f1-muted";
+                                if (cell.tone === "purple") return "text-purple-300";
+                                if (cell.tone === "green") return "text-green-300";
+                                if (cell.tone === "yellow") return "text-yellow-300";
+                                return "text-f1-muted";
+                              };
+                              const sectorValue = (cell: Q3SectorCell | undefined) => {
+                                if (!cell || !cell.raw) return "—";
+                                if (!cell.revealed) return "…";
+                                return cell.raw;
+                              };
+                              return (
+                                <div
+                                  key={line.abbr}
+                                  className={`grid grid-cols-[minmax(90px,1.2fr)_0.85fr_0.85fr_0.85fr_1fr] gap-x-2 px-2 py-1 text-[10px] tabular-nums ${
+                                    idx > 0 ? "border-t border-f1-border/35" : ""
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <span className="text-[9px] text-f1-muted">{idx + 1}</span>
+                                    <span
+                                      className="inline-block w-4 border-t-2"
+                                      style={{
+                                        borderTopColor: line.color,
+                                        borderTopStyle: line.lineDash?.length ? "dashed" : "solid",
+                                      }}
+                                    />
+                                    <Q3LegendCar color={line.color} outlined={line.markerStyle === "outlined"} />
+                                    <span className="font-bold text-white truncate">{line.abbr}</span>
+                                  </div>
+                                  {cells.map((cell, i) => (
+                                    <span key={`${line.abbr}-s${i + 1}`} className={`text-center ${sectorTextClass(cell)}`}>
+                                      {sectorValue(cell)}
+                                    </span>
+                                  ))}
+                                  <span className="text-right text-white">{lineMeta?.lap_time || "—"}</span>
+                                </div>
+                              );
+                            })}
+                            <div className="grid grid-cols-[minmax(90px,1.2fr)_0.85fr_0.85fr_0.85fr_1fr] gap-x-2 border-t border-f1-border/45 bg-black/25 px-2 py-1 text-[9px] tabular-nums">
+                              <span className="font-semibold text-f1-muted uppercase">Δ (D1-D2)</span>
+                              <span className={`text-center ${
+                                !q3SectorDelta?.s1?.ready
+                                  ? "text-f1-muted"
+                                  : Math.abs(q3SectorDelta.s1.signed ?? 0) < 5e-4
+                                  ? "text-white"
+                                  : (q3SectorDelta.s1.signed ?? 0) < 0
+                                  ? "text-green-300"
+                                  : "text-yellow-300"
+                              }`}>
+                                {q3SectorDelta?.s1?.ready ? `${q3SectorDelta.s1.text}s` : "…"}
+                              </span>
+                              <span className={`text-center ${
+                                !q3SectorDelta?.s2?.ready
+                                  ? "text-f1-muted"
+                                  : Math.abs(q3SectorDelta.s2.signed ?? 0) < 5e-4
+                                  ? "text-white"
+                                  : (q3SectorDelta.s2.signed ?? 0) < 0
+                                  ? "text-green-300"
+                                  : "text-yellow-300"
+                              }`}>
+                                {q3SectorDelta?.s2?.ready ? `${q3SectorDelta.s2.text}s` : "…"}
+                              </span>
+                              <span className={`text-center ${
+                                !q3SectorDelta?.s3?.ready
+                                  ? "text-f1-muted"
+                                  : Math.abs(q3SectorDelta.s3.signed ?? 0) < 5e-4
+                                  ? "text-white"
+                                  : (q3SectorDelta.s3.signed ?? 0) < 0
+                                  ? "text-green-300"
+                                  : "text-yellow-300"
+                              }`}>
+                                {q3SectorDelta?.s3?.ready ? `${q3SectorDelta.s3.text}s` : "…"}
+                              </span>
+                              <span className={`text-right ${
+                                !q3LapDelta
+                                  ? "text-f1-muted"
+                                  : Math.abs(q3LapDelta.signed) < 5e-4
+                                  ? "text-white"
+                                  : q3LapDelta.signed < 0
+                                  ? "text-green-300"
+                                  : "text-yellow-300"
+                              }`}>
+                                {q3LapDelta ? `${q3LapDelta.text}s` : "…"}
+                              </span>
+                            </div>
+                          </div>
+                          <p className="mt-1 text-[8px] text-f1-muted">negative = Driver 1 faster</p>
                         </div>
                       )}
                       {q3CompareLines.length !== 2 && (
@@ -1560,7 +1825,7 @@ export default function ReplayPage() {
         playing={controlsUseQ3 ? q3PlaybackPlaying : replay.playing}
         speed={controlsUseQ3 ? q3PlaybackSpeed : replay.speed}
         currentTime={controlsUseQ3 ? q3PlaybackTime : (replay.frame?.timestamp || 0)}
-        totalTime={controlsUseQ3 ? q3TotalTime : effectiveTotalTime}
+        totalTime={controlsUseQ3 ? q3EffectiveTotalTime : effectiveTotalTime}
         currentLap={controlsUseQ3 ? 0 : (replay.frame?.lap || 0)}
         totalLaps={controlsUseQ3 ? 0 : replay.totalLaps}
         finished={controlsUseQ3 ? q3PlaybackFinished : replay.finished}
@@ -1741,7 +2006,7 @@ export default function ReplayPage() {
                 playing={controlsUseQ3 ? q3PlaybackPlaying : replay.playing}
                 speed={controlsUseQ3 ? q3PlaybackSpeed : replay.speed}
                 currentTime={controlsUseQ3 ? q3PlaybackTime : (replay.frame?.timestamp || 0)}
-                totalTime={controlsUseQ3 ? q3TotalTime : effectiveTotalTime}
+                totalTime={controlsUseQ3 ? q3EffectiveTotalTime : effectiveTotalTime}
                 currentLap={controlsUseQ3 ? 0 : (replay.frame?.lap || 0)}
                 totalLaps={controlsUseQ3 ? 0 : replay.totalLaps}
                 finished={controlsUseQ3 ? q3PlaybackFinished : replay.finished}
