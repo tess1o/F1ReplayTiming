@@ -36,6 +36,22 @@ export interface SectorOverlay {
   colors: { s1: string; s2: string; s3: string };
 }
 
+export interface Q3LineSample {
+  x: number;
+  y: number;
+  t: number;
+  p: number;
+}
+
+export interface Q3CompareLine {
+  abbr: string;
+  color: string;
+  lapTimeSeconds: number;
+  samples: Q3LineSample[];
+  lineDash?: number[];
+  markerStyle?: "solid" | "outlined";
+}
+
 const TRACK_STATUS_COLORS: Record<string, string> = {
   green: "#3A3A4A",
   yellow: "#F5C518",
@@ -358,5 +374,279 @@ export function drawDrivers(
       ctx.textAlign = "center";
       ctx.fillText(drv.abbr, sx, sy - radius - 4);
     }
+  }
+}
+
+function interpolateSamplePosition(
+  samples: Q3LineSample[],
+  elapsedSeconds: number,
+): { x: number; y: number; p: number; headingX: number; headingY: number } | null {
+  if (!samples || samples.length === 0) return null;
+  if (samples.length === 1) {
+    return { x: samples[0].x, y: samples[0].y, p: samples[0].p, headingX: 1, headingY: 0 };
+  }
+
+  if (elapsedSeconds <= samples[0].t) {
+    const nx = samples[1].x - samples[0].x;
+    const ny = samples[1].y - samples[0].y;
+    const mag = Math.hypot(nx, ny) || 1;
+    return { x: samples[0].x, y: samples[0].y, p: samples[0].p, headingX: nx / mag, headingY: ny / mag };
+  }
+  const last = samples[samples.length - 1];
+  if (elapsedSeconds >= last.t) {
+    const prev = samples[samples.length - 2];
+    const nx = last.x - prev.x;
+    const ny = last.y - prev.y;
+    const mag = Math.hypot(nx, ny) || 1;
+    return { x: last.x, y: last.y, p: last.p, headingX: nx / mag, headingY: ny / mag };
+  }
+
+  for (let i = 1; i < samples.length; i++) {
+    const curr = samples[i];
+    if (elapsedSeconds > curr.t) continue;
+    const prev = samples[i - 1];
+    const span = Math.max(curr.t - prev.t, 1e-6);
+    const ratio = (elapsedSeconds - prev.t) / span;
+    const nx = curr.x - prev.x;
+    const ny = curr.y - prev.y;
+    const mag = Math.hypot(nx, ny) || 1;
+    return {
+      x: prev.x + (curr.x - prev.x) * ratio,
+      y: prev.y + (curr.y - prev.y) * ratio,
+      p: prev.p + (curr.p - prev.p) * ratio,
+      headingX: nx / mag,
+      headingY: ny / mag,
+    };
+  }
+
+  const prev = samples[samples.length - 2];
+  const nx = last.x - prev.x;
+  const ny = last.y - prev.y;
+  const mag = Math.hypot(nx, ny) || 1;
+  return { x: last.x, y: last.y, p: last.p, headingX: nx / mag, headingY: ny / mag };
+}
+
+function mapReplayElapsedToSampleTime(
+  samples: Q3LineSample[],
+  lapTimeSeconds: number,
+  replayElapsedSeconds: number,
+): number {
+  if (!samples || samples.length === 0) return replayElapsedSeconds;
+  const firstT = samples[0].t;
+  const lastT = samples[samples.length - 1].t;
+  const span = Math.max(lastT - firstT, 1e-6);
+  const lapSpan = Math.max(lapTimeSeconds, 1e-6);
+  const clampedReplay = Math.max(0, Math.min(lapTimeSeconds, replayElapsedSeconds));
+  const normalized = clampedReplay / lapSpan;
+  return firstT + normalized * span;
+}
+
+export function drawQ3CompareOverlay(
+  ctx: CanvasRenderingContext2D,
+  lines: Q3CompareLine[],
+  elapsedSeconds: number,
+  width: number,
+  height: number,
+  rotation: number,
+) {
+  if (!lines || lines.length === 0) return;
+
+  const padX = 40;
+  const padTop = 60;
+  const padBottom = 90;
+  const w = width - padX * 2;
+  const h = height - padTop - padBottom;
+
+  const rad = (rotation * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const cx = 0.5;
+  const cy = 0.5;
+
+  const allPoints: TrackPoint[] = [];
+  for (const line of lines) {
+    for (const s of line.samples) allPoints.push({ x: s.x, y: s.y });
+  }
+  if (allPoints.length === 0) return;
+
+  const rotatedBounds = allPoints.map((p) => {
+    const dx = p.x - cx;
+    const dy = p.y - cy;
+    return { x: dx * cos - dy * sin + cx, y: dx * sin + dy * cos + cy };
+  });
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of rotatedBounds) {
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y);
+    maxY = Math.max(maxY, p.y);
+  }
+
+  const rangeX = maxX - minX || 1;
+  const rangeY = maxY - minY || 1;
+  const scale = Math.min(w / rangeX, h / rangeY);
+  const offsetX = padX + (w - rangeX * scale) / 2;
+  const offsetY = padTop + (h - rangeY * scale) / 2;
+
+  function toScreen(p: TrackPoint): [number, number] {
+    const dx = p.x - cx;
+    const dy = p.y - cy;
+    const rx = dx * cos - dy * sin + cx;
+    const ry = dx * sin + dy * cos + cy;
+    return [
+      offsetX + (rx - minX) * scale,
+      offsetY + (maxY - ry) * scale,
+    ];
+  }
+
+  function drawRevealedLine(samples: Q3LineSample[], elapsedForDriver: number, color: string, lineDash?: number[]) {
+    if (!samples || samples.length < 2) return;
+
+    const firstT = samples[0].t;
+    const lastT = samples[samples.length - 1].t;
+    const clampedElapsed = Math.max(firstT, Math.min(elapsedForDriver, lastT));
+    if (clampedElapsed <= firstT + 1e-6) return;
+
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    const [sx, sy] = toScreen({ x: samples[0].x, y: samples[0].y });
+    ctx.moveTo(sx, sy);
+
+    let drewAny = false;
+    for (let i = 1; i < samples.length; i++) {
+      const curr = samples[i];
+      if (curr.t <= clampedElapsed) {
+        const [px, py] = toScreen({ x: curr.x, y: curr.y });
+        ctx.lineTo(px, py);
+        drewAny = true;
+        continue;
+      }
+
+      const prev = samples[i - 1];
+      const span = Math.max(curr.t - prev.t, 1e-6);
+      const ratio = Math.max(0, Math.min(1, (clampedElapsed - prev.t) / span));
+      const ix = prev.x + (curr.x - prev.x) * ratio;
+      const iy = prev.y + (curr.y - prev.y) * ratio;
+      const [px, py] = toScreen({ x: ix, y: iy });
+      ctx.lineTo(px, py);
+      drewAny = true;
+      break;
+    }
+
+    if (drewAny) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 4;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.setLineDash(lineDash || []);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawCarMarker(
+    centerX: number,
+    centerY: number,
+    headingAngle: number,
+    color: string,
+    style: "solid" | "outlined" = "solid",
+  ) {
+    ctx.save();
+    ctx.translate(centerX, centerY);
+    ctx.rotate(headingAngle);
+
+    const bodyColor = style === "outlined" ? "#111827" : color;
+    const borderColor = style === "outlined" ? color : "#FFFFFF";
+    const borderWidth = style === "outlined" ? 2.5 : 1.7;
+
+    // Rear wing
+    ctx.fillStyle = bodyColor;
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = borderWidth;
+    ctx.beginPath();
+    ctx.roundRect(-9.5, -4, 2.8, 8, 1);
+    ctx.fill();
+    ctx.stroke();
+
+    // Main body
+    ctx.beginPath();
+    ctx.roundRect(-6.8, -3.2, 10.8, 6.4, 2.2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Nose cone
+    ctx.beginPath();
+    ctx.moveTo(4, -2.3);
+    ctx.lineTo(10.3, 0);
+    ctx.lineTo(4, 2.3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Front wing
+    ctx.beginPath();
+    ctx.roundRect(9.8, -3.8, 2.4, 7.6, 1);
+    ctx.fill();
+    ctx.stroke();
+
+    // Wheels
+    ctx.fillStyle = "#0A0A0A";
+    ctx.beginPath();
+    ctx.arc(-3.8, -4.5, 1.6, 0, Math.PI * 2);
+    ctx.arc(-3.8, 4.5, 1.6, 0, Math.PI * 2);
+    ctx.arc(2.6, -4.5, 1.6, 0, Math.PI * 2);
+    ctx.arc(2.6, 4.5, 1.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  const cars: Array<{
+    abbr: string;
+    color: string;
+    x: number;
+    y: number;
+    headingX: number;
+    headingY: number;
+    markerStyle: "solid" | "outlined";
+  }> = [];
+  for (const line of lines) {
+    if (!line.samples || line.samples.length === 0) continue;
+    const replayElapsedForDriver = Math.min(elapsedSeconds, Math.max(line.lapTimeSeconds, 0));
+    const sampleElapsedForDriver = mapReplayElapsedToSampleTime(
+      line.samples,
+      line.lapTimeSeconds,
+      replayElapsedForDriver,
+    );
+    drawRevealedLine(line.samples, sampleElapsedForDriver, line.color, line.lineDash);
+    const pos = interpolateSamplePosition(line.samples, sampleElapsedForDriver);
+    if (!pos) continue;
+    cars.push({
+      abbr: line.abbr,
+      color: line.color,
+      x: pos.x,
+      y: pos.y,
+      headingX: pos.headingX,
+      headingY: pos.headingY,
+      markerStyle: line.markerStyle || "solid",
+    });
+  }
+
+  for (const car of cars) {
+    const [sx, sy] = toScreen({ x: car.x, y: car.y });
+    const [hx, hy] = toScreen({
+      x: car.x + car.headingX * 0.01,
+      y: car.y + car.headingY * 0.01,
+    });
+    const headingAngle = Math.atan2(hy - sy, hx - sx);
+    ctx.save();
+    drawCarMarker(sx, sy, headingAngle, car.color, car.markerStyle);
+    ctx.font = "800 11px system-ui, -apple-system, sans-serif";
+    ctx.fillStyle = "#FFFFFF";
+    ctx.textAlign = "center";
+    ctx.fillText(car.abbr, sx, sy - 15);
+    ctx.restore();
   }
 }

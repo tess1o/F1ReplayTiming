@@ -130,6 +130,11 @@ type sessionStatusPoint struct {
 	Status string
 }
 
+type qualifyingPhasePoint struct {
+	T    float64
+	Part int
+}
+
 type replayWindow struct {
 	Start float64
 	End   float64

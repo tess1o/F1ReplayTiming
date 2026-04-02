@@ -77,6 +77,7 @@ func newHTTPMux(a *app) *http.ServeMux {
 	mux.HandleFunc("GET /api/sessions/{year}/{round}", a.handleSession)
 	mux.HandleFunc("GET /api/sessions/{year}/{round}/track", a.handleTrack)
 	mux.HandleFunc("GET /api/sessions/{year}/{round}/laps", a.handleLaps)
+	mux.HandleFunc("GET /api/sessions/{year}/{round}/q3-lines", a.handleQ3Lines)
 	mux.HandleFunc("GET /api/sessions/{year}/{round}/results", a.handleResults)
 	mux.HandleFunc("GET /api/sessions/{year}/{round}/telemetry", a.handleTelemetry)
 	mux.HandleFunc("GET /api/live/status", a.handleLiveStatus)

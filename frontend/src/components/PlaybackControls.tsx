@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { SPEED_OPTIONS } from "@/lib/constants";
 import { QualiPhase, QualiPhaseInfo } from "@/hooks/useReplaySocket";
 import { Maximize, Minimize } from "lucide-react";
@@ -61,6 +61,8 @@ export default function PlaybackControls({
 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const progress = totalTime > 0 ? (currentTime / totalTime) * 100 : 0;
+  const progressBarRef = useRef<HTMLDivElement | null>(null);
+  const isScrubbingRef = useRef(false);
 
   function formatTime(seconds: number): string {
     const h = Math.floor(seconds / 3600);
@@ -97,20 +99,51 @@ export default function PlaybackControls({
     </button>
   );
 
+  const seekToClientX = (clientX: number) => {
+    const bar = progressBarRef.current;
+    if (!bar || totalTime <= 0) return;
+    const rect = bar.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(rect.width, 1)));
+    onSeek(pct * totalTime);
+  };
+
   const progressBar = (
     <div
-      className="w-full h-2 bg-f1-border rounded-full cursor-pointer relative group"
+      ref={progressBarRef}
+      className="w-full h-5 -my-1 cursor-pointer relative group select-none touch-none"
+      onPointerDown={(e) => {
+        isScrubbingRef.current = true;
+        if (typeof e.currentTarget.setPointerCapture === "function") {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }
+        seekToClientX(e.clientX);
+      }}
+      onPointerMove={(e) => {
+        if (!isScrubbingRef.current) return;
+        seekToClientX(e.clientX);
+      }}
+      onPointerUp={(e) => {
+        if (isScrubbingRef.current) seekToClientX(e.clientX);
+        isScrubbingRef.current = false;
+      }}
+      onPointerCancel={() => {
+        isScrubbingRef.current = false;
+      }}
+      onLostPointerCapture={() => {
+        isScrubbingRef.current = false;
+      }}
       onClick={(e) => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        const pct = (e.clientX - rect.left) / rect.width;
-        onSeek(pct * totalTime);
+        if (isScrubbingRef.current) return;
+        seekToClientX(e.clientX);
       }}
     >
-      <div
-        className="h-full bg-f1-red rounded-full transition-all duration-100 relative"
-        style={{ width: `${progress}%` }}
-      >
-        <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+      <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-2 bg-f1-border rounded-full">
+        <div
+          className="h-full bg-f1-red rounded-full transition-all duration-100 relative"
+          style={{ width: `${progress}%` }}
+        >
+          <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+        </div>
       </div>
     </div>
   );

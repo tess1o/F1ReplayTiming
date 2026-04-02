@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-func (p *GoSessionProcessor) parseTimingDataStream(ctx context.Context, sessionPath string, feed sessionFeed, driverByNum map[string]driverMeta, timingApp map[string]any) (map[string][]timingState, []map[string]any, map[string]timingState, error) {
+func (p *GoSessionProcessor) parseTimingDataStream(ctx context.Context, sessionPath string, feed sessionFeed, driverByNum map[string]driverMeta, timingApp map[string]any, phaseTimeline []qualifyingPhasePoint) (map[string][]timingState, []map[string]any, map[string]timingState, error) {
 	url := fmt.Sprintf("%s/%s/%s", p.baseURL, strings.Trim(sessionPath, "/"), strings.Trim(feed.StreamPath, "/"))
 	resp, err := p.doRequest(ctx, url)
 	if err != nil {
@@ -96,19 +96,21 @@ func (p *GoSessionProcessor) parseTimingDataStream(ctx context.Context, sessionP
 					seen[next.Lap] = struct{}{}
 					meta := driverByNum[racing]
 					compound, tyreLife := stintForLap(stintMap[meta.Abbr], next.Lap)
+					phase := qualifyingPhaseAt(phaseTimeline, ts)
 					lapsOut = append(lapsOut, map[string]any{
-						"driver":     meta.Abbr,
-						"lap_number": next.Lap,
-						"position":   next.Position,
-						"lap_time":   lastLapTime,
-						"time":       nil,
-						"sector1":    nil,
-						"sector2":    nil,
-						"sector3":    nil,
-						"compound":   compound,
-						"tyre_life":  tyreLife,
-						"pit_in":     next.InPit,
-						"pit_out":    next.PitOut,
+						"driver":           meta.Abbr,
+						"lap_number":       next.Lap,
+						"position":         next.Position,
+						"lap_time":         lastLapTime,
+						"time":             round3(ts),
+						"qualifying_phase": phase,
+						"sector1":          nil,
+						"sector2":          nil,
+						"sector3":          nil,
+						"compound":         compound,
+						"tyre_life":        tyreLife,
+						"pit_in":           next.InPit,
+						"pit_out":          next.PitOut,
 					})
 				}
 			}
@@ -126,6 +128,97 @@ func (p *GoSessionProcessor) parseTimingDataStream(ctx context.Context, sessionP
 		return asInt(lapsOut[i]["lap_number"]) < asInt(lapsOut[j]["lap_number"])
 	})
 	return perDriver, lapsOut, current, nil
+}
+
+func (p *GoSessionProcessor) parseSessionDataStream(ctx context.Context, sessionPath string, feed sessionFeed) ([]qualifyingPhasePoint, error) {
+	url := fmt.Sprintf("%s/%s/%s", p.baseURL, strings.Trim(sessionPath, "/"), strings.Trim(feed.StreamPath, "/"))
+	resp, err := p.doRequest(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	points := make([]qualifyingPhasePoint, 0, 16)
+	lastPart := 0
+
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(strings.TrimPrefix(sc.Text(), "\ufeff"))
+		if len(line) < 13 {
+			continue
+		}
+		ts, ok := parseStreamTimestamp(line[:12])
+		if !ok {
+			continue
+		}
+		payload := strings.TrimSpace(line[12:])
+		var root map[string]any
+		if err := json.Unmarshal([]byte(payload), &root); err != nil {
+			continue
+		}
+
+		seriesRaw := root["Series"]
+		if seriesRaw == nil {
+			continue
+		}
+
+		entries := make([]map[string]any, 0, 4)
+		switch v := seriesRaw.(type) {
+		case []any:
+			for _, item := range v {
+				if m, ok := item.(map[string]any); ok {
+					entries = append(entries, m)
+				}
+			}
+		case map[string]any:
+			keys := make([]string, 0, len(v))
+			for k := range v {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				if m, ok := v[k].(map[string]any); ok {
+					entries = append(entries, m)
+				}
+			}
+		}
+		if len(entries) == 0 {
+			continue
+		}
+
+		part := 0
+		for i := len(entries) - 1; i >= 0; i-- {
+			if qp := asInt(entries[i]["QualifyingPart"]); qp > 0 {
+				part = qp
+				break
+			}
+		}
+		if part <= 0 || part == lastPart {
+			continue
+		}
+		points = append(points, qualifyingPhasePoint{T: ts, Part: part})
+		lastPart = part
+	}
+	if err := sc.Err(); err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return points, nil
+}
+
+func qualifyingPhaseAt(points []qualifyingPhasePoint, t float64) any {
+	if len(points) == 0 {
+		return nil
+	}
+	idx := sort.Search(len(points), func(i int) bool { return points[i].T > t }) - 1
+	if idx < 0 {
+		return nil
+	}
+	part := points[idx].Part
+	if part <= 0 {
+		return nil
+	}
+	return fmt.Sprintf("Q%d", part)
 }
 
 func (p *GoSessionProcessor) parsePositionStream(ctx context.Context, sessionPath string, feed sessionFeed) (map[string][]posSample, error) {

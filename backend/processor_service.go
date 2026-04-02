@@ -24,6 +24,7 @@ func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int
 		log.Printf("processor(go): %s", msg)
 	}
 	sessionType = strings.ToUpper(strings.TrimSpace(sessionType))
+	isQualifying := sessionType == "Q" || sessionType == "SQ"
 	status("Fetching season index...")
 	idx, err := p.fetchSeasonIndex(ctx, year)
 	if err != nil {
@@ -89,8 +90,16 @@ func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int
 		return fmt.Errorf("upsert session info: %w", err)
 	}
 
+	var phaseTimeline []qualifyingPhasePoint
+	if isQualifying {
+		if sessionDataFeed, ok := sidx.Feeds["SessionData"]; ok {
+			status("Parsing qualifying phase stream...")
+			phaseTimeline, _ = p.parseSessionDataStream(ctx, sessionPath, sessionDataFeed)
+		}
+	}
+
 	status("Parsing timing stream...")
-	timingTimeline, laps, latestState, err := p.parseTimingDataStream(ctx, sessionPath, sidx.Feeds["TimingData"], driverByNum, timingAppRaw)
+	timingTimeline, laps, latestState, err := p.parseTimingDataStream(ctx, sessionPath, sidx.Feeds["TimingData"], driverByNum, timingAppRaw, phaseTimeline)
 	if err != nil {
 		return err
 	}
@@ -122,6 +131,14 @@ func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int
 	}
 	if err := p.store.ReplaceTrack(ctx, sessionID, trackJSON); err != nil {
 		return fmt.Errorf("store track: %w", err)
+	}
+	if isQualifying {
+		q3Lines := buildQ3LinesJSON(drivers, driverByNum, laps, posTimeline, timingTimeline, trackJSON)
+		if len(q3Lines) > 0 {
+			if err := p.writeJSONAtomic(filepath.Join(baseOut, "q3_lines.json"), q3Lines); err != nil {
+				return err
+			}
+		}
 	}
 
 	status("Parsing telemetry stream...")
@@ -367,6 +384,234 @@ func buildTrackJSON(pos map[string][]posSample, timing map[string][]timingState,
 	}
 }
 
+func buildQ3LinesJSON(drivers []driverMeta, byNum map[string]driverMeta, laps []map[string]any, pos map[string][]posSample, timing map[string][]timingState, track map[string]any) map[string]any {
+	type bestLap struct {
+		Lap     int
+		TimeStr string
+		Seconds float64
+		EndTs   float64
+	}
+	abbrToMeta := make(map[string]driverMeta, len(drivers))
+	abbrToNumber := make(map[string]string, len(drivers))
+	for _, d := range drivers {
+		abbrToMeta[d.Abbr] = d
+		abbrToNumber[d.Abbr] = d.Number
+	}
+
+	bestByDriver := make(map[string]bestLap, len(laps))
+	for _, lap := range laps {
+		if strings.ToUpper(strings.TrimSpace(asString(lap["qualifying_phase"]))) != "Q3" {
+			continue
+		}
+		abbr := strings.ToUpper(strings.TrimSpace(asString(lap["driver"])))
+		if abbr == "" {
+			continue
+		}
+		lapNum := asInt(lap["lap_number"])
+		if lapNum <= 0 {
+			continue
+		}
+		lapTime := strings.TrimSpace(asString(lap["lap_time"]))
+		secs, ok := parseLapTimeToSeconds(lapTime)
+		if !ok {
+			continue
+		}
+		lapEndTs := asFloat(lap["time"], 0)
+		prev, exists := bestByDriver[abbr]
+		if !exists || secs < prev.Seconds {
+			bestByDriver[abbr] = bestLap{
+				Lap:     lapNum,
+				TimeStr: lapTime,
+				Seconds: secs,
+				EndTs:   lapEndTs,
+			}
+		}
+	}
+	if len(bestByDriver) == 0 {
+		return nil
+	}
+
+	norm, _ := track["norm"].(map[string]any)
+	xMin := asFloat(norm["x_min"], 0)
+	yMin := asFloat(norm["y_min"], 0)
+	scale := asFloat(norm["scale"], 1)
+	if scale <= 0 {
+		scale = 1
+	}
+
+	entries := make([]map[string]any, 0, len(bestByDriver))
+	for abbr, best := range bestByDriver {
+		number := abbrToNumber[abbr]
+		if number == "" {
+			continue
+		}
+		driverPos := pos[number]
+		driverTiming := timing[number]
+		if len(driverPos) == 0 || len(driverTiming) == 0 {
+			continue
+		}
+
+		lapPoints := make([]posSample, 0, 1024)
+		if best.EndTs > 0 && best.Seconds > 0 {
+			lapStartTs := best.EndTs - best.Seconds
+			const boundaryPad = 0.35
+			const boundarySnap = 1.5
+
+			if ps := nearestPosSampleWithin(driverPos, lapStartTs, boundarySnap); ps != nil {
+				lapPoints = append(lapPoints, *ps)
+			}
+			for _, p := range driverPos {
+				if p.T < lapStartTs-boundaryPad || p.T > best.EndTs+boundaryPad {
+					continue
+				}
+				lapPoints = append(lapPoints, p)
+			}
+			if pe := nearestPosSampleWithin(driverPos, best.EndTs, boundarySnap); pe != nil {
+				lapPoints = append(lapPoints, *pe)
+			}
+		}
+		// Fallback for older artifacts where lap completion timestamp may be unavailable.
+		if len(lapPoints) < 10 {
+			lapPoints = lapPoints[:0]
+			for _, p := range driverPos {
+				if lapAt(driverTiming, p.T) != best.Lap {
+					continue
+				}
+				lapPoints = append(lapPoints, p)
+			}
+		}
+		sort.Slice(lapPoints, func(i, j int) bool { return lapPoints[i].T < lapPoints[j].T })
+		if len(lapPoints) < 10 {
+			continue
+		}
+		lapPoints = sanitizeTrackLap(lapPoints)
+		if len(lapPoints) < 10 {
+			continue
+		}
+
+		stepDist := make([]float64, len(lapPoints))
+		totalDist := 0.0
+		for i := 1; i < len(lapPoints); i++ {
+			totalDist += pointDistance(lapPoints[i-1], lapPoints[i])
+			stepDist[i] = totalDist
+		}
+		if totalDist <= 0 {
+			continue
+		}
+
+		startT := lapPoints[0].T
+		if best.EndTs > 0 && best.Seconds > 0 {
+			startT = best.EndTs - best.Seconds
+		}
+		samples := make([]map[string]any, 0, len(lapPoints))
+		for i := 0; i < len(lapPoints); i++ {
+			lp := lapPoints[i]
+			elapsed := lp.T - startT
+			if elapsed < 0 {
+				elapsed = 0
+			}
+			if best.Seconds > 0 && elapsed > best.Seconds {
+				elapsed = best.Seconds
+			}
+			samples = append(samples, map[string]any{
+				"x": normalizeCoord(lp.X, xMin, scale),
+				"y": normalizeCoord(lp.Y, yMin, scale),
+				"t": round3(elapsed),
+				"p": round6(stepDist[i] / totalDist),
+			})
+		}
+		samples = decimateLineSamples(samples, 1200)
+
+		meta, ok := abbrToMeta[abbr]
+		if !ok {
+			meta = byNum[number]
+		}
+		entries = append(entries, map[string]any{
+			"abbr":             abbr,
+			"driver_number":    number,
+			"team":             meta.Team,
+			"color":            meta.Color,
+			"lap_number":       best.Lap,
+			"lap_time":         best.TimeStr,
+			"lap_time_seconds": round3(best.Seconds),
+			"phase":            "Q3",
+			"samples":          samples,
+		})
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		ti := asFloat(entries[i]["lap_time_seconds"], math.MaxFloat64)
+		tj := asFloat(entries[j]["lap_time_seconds"], math.MaxFloat64)
+		if ti == tj {
+			return asString(entries[i]["abbr"]) < asString(entries[j]["abbr"])
+		}
+		return ti < tj
+	})
+
+	defaultPair := make([]any, 0, 2)
+	if len(entries) > 0 {
+		defaultPair = append(defaultPair, asString(entries[0]["abbr"]))
+	}
+	if len(entries) > 1 {
+		defaultPair = append(defaultPair, asString(entries[1]["abbr"]))
+	}
+
+	return map[string]any{
+		"phase":        "Q3",
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+		"drivers":      entries,
+		"default_pair": defaultPair,
+	}
+}
+
+func parseLapTimeToSeconds(raw string) (float64, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	parts := strings.Split(raw, ":")
+	switch len(parts) {
+	case 1:
+		v, err := strconv.ParseFloat(parts[0], 64)
+		if err != nil || v <= 0 {
+			return 0, false
+		}
+		return v, true
+	case 2:
+		mins, err1 := strconv.Atoi(parts[0])
+		secs, err2 := strconv.ParseFloat(parts[1], 64)
+		if err1 != nil || err2 != nil || mins < 0 || secs < 0 {
+			return 0, false
+		}
+		return float64(mins*60) + secs, true
+	default:
+		return 0, false
+	}
+}
+
+func decimateLineSamples(samples []map[string]any, maxPoints int) []map[string]any {
+	if len(samples) <= maxPoints || maxPoints <= 2 {
+		return samples
+	}
+	step := int(math.Ceil(float64(len(samples)-1) / float64(maxPoints-1)))
+	if step < 1 {
+		step = 1
+	}
+	out := make([]map[string]any, 0, maxPoints)
+	lastIdx := -1
+	for i := 0; i < len(samples); i += step {
+		out = append(out, samples[i])
+		lastIdx = i
+	}
+	if lastIdx != len(samples)-1 {
+		out = append(out, samples[len(samples)-1])
+	}
+	return out
+}
+
 func pickRepresentativeTrackLap(pos map[string][]posSample, timing map[string][]timingState) []posSample {
 	best := []posSample{}
 	bestScoreLen := -1
@@ -552,4 +797,8 @@ func boundsForTrack(points []posSample) (xMin, yMin, scale float64) {
 
 func normalizeCoord(v, min, scale float64) float64 {
 	return (v - min) / scale
+}
+
+func round6(v float64) float64 {
+	return math.Round(v*1_000_000) / 1_000_000
 }

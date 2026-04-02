@@ -158,6 +158,24 @@ func (a *app) handleLaps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"laps": data})
 }
 
+func (a *app) handleQ3Lines(w http.ResponseWriter, r *http.Request) {
+	year, round, ok := parseYearRound(w, r)
+	if !ok {
+		return
+	}
+	sessionType := strings.ToUpper(defaultString(r.URL.Query().Get("type"), "Q"))
+	if sessionType != "Q" && sessionType != "SQ" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"detail": "Q3 lines are available only for qualifying sessions (Q/SQ)."})
+		return
+	}
+	data, err := a.readJSONAny(filepath.Join("sessions", strconv.Itoa(year), strconv.Itoa(round), sessionType, "q3_lines.json"))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"detail": "Q3 line data not available for this session."})
+		return
+	}
+	writeJSON(w, http.StatusOK, data)
+}
+
 func (a *app) handleResults(w http.ResponseWriter, r *http.Request) {
 	year, round, ok := parseYearRound(w, r)
 	if !ok {

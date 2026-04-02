@@ -13,7 +13,7 @@ import PlaybackControls from "@/components/PlaybackControls";
 import TelemetryChart from "@/components/TelemetryChart";
 import PiPWindow from "@/components/PiPWindow";
 import LapAnalysisPanel from "@/components/LapAnalysisPanel";
-import type { SectorOverlay } from "@/lib/trackRenderer";
+import type { SectorOverlay, Q3CompareLine } from "@/lib/trackRenderer";
 import { Maximize, Minimize, ArrowUpRight } from "lucide-react";
 
 interface TrackData {
@@ -55,6 +55,168 @@ interface DownloadStatus {
   max_attempts?: number;
 }
 
+interface Q3LineSample {
+  x: number;
+  y: number;
+  t: number;
+  p: number;
+}
+
+interface Q3LineDriver {
+  abbr: string;
+  driver_number: string;
+  team: string;
+  color: string;
+  lap_number: number;
+  lap_time: string;
+  lap_time_seconds: number;
+  phase: "Q3";
+  samples: Q3LineSample[];
+}
+
+interface Q3LinesData {
+  phase: "Q3";
+  generated_at: string;
+  default_pair: string[];
+  drivers: Q3LineDriver[];
+}
+
+function normalizeHexColor(input: string): string {
+  const raw = (input || "").trim();
+  if (!raw) return "#FFFFFF";
+  const withHash = raw.startsWith("#") ? raw : `#${raw}`;
+  if (withHash.length === 4) {
+    const r = withHash[1];
+    const g = withHash[2];
+    const b = withHash[3];
+    return `#${r}${r}${g}${g}${b}${b}`.toUpperCase();
+  }
+  if (withHash.length === 7) return withHash.toUpperCase();
+  return "#FFFFFF";
+}
+
+function shiftHexColor(input: string, shift: number): string {
+  const hex = normalizeHexColor(input);
+  const parse = (start: number) => Number.parseInt(hex.slice(start, start + 2), 16);
+  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+  const r = parse(1);
+  const g = parse(3);
+  const b = parse(5);
+  const nr = clamp(r + shift);
+  const ng = clamp(g + shift);
+  const nb = clamp(b + shift);
+  return `#${nr.toString(16).padStart(2, "0")}${ng.toString(16).padStart(2, "0")}${nb.toString(16).padStart(2, "0")}`.toUpperCase();
+}
+
+function interpolateQ3StateAtSampleTime(
+  samples: Q3LineSample[],
+  sampleTime: number,
+): { p: number; t: number } | null {
+  if (!samples || samples.length === 0) return null;
+  if (samples.length === 1) return { p: samples[0].p, t: samples[0].t };
+  if (sampleTime <= samples[0].t) return { p: samples[0].p, t: samples[0].t };
+  const last = samples[samples.length - 1];
+  if (sampleTime >= last.t) return { p: last.p, t: last.t };
+
+  for (let i = 1; i < samples.length; i++) {
+    const curr = samples[i];
+    if (sampleTime > curr.t) continue;
+    const prev = samples[i - 1];
+    const span = Math.max(curr.t - prev.t, 1e-6);
+    const ratio = (sampleTime - prev.t) / span;
+    return {
+      p: prev.p + (curr.p - prev.p) * ratio,
+      t: sampleTime,
+    };
+  }
+
+  return { p: last.p, t: last.t };
+}
+
+function mapReplayToSampleTime(samples: Q3LineSample[], lapTimeSeconds: number, replayTime: number): number | null {
+  if (!samples || samples.length === 0) return null;
+  const first = samples[0].t;
+  const last = samples[samples.length - 1].t;
+  const span = Math.max(last - first, 1e-6);
+  const lapSpan = Math.max(lapTimeSeconds, 1e-6);
+  const clampedReplay = Math.max(0, Math.min(lapTimeSeconds, replayTime));
+  const normalized = clampedReplay / lapSpan;
+  return first + normalized * span;
+}
+
+function mapSampleToReplayTime(samples: Q3LineSample[], lapTimeSeconds: number, sampleTime: number): number | null {
+  if (!samples || samples.length === 0) return null;
+  const first = samples[0].t;
+  const last = samples[samples.length - 1].t;
+  const span = Math.max(last - first, 1e-6);
+  const normalized = Math.max(0, Math.min(1, (sampleTime - first) / span));
+  return normalized * Math.max(lapTimeSeconds, 0);
+}
+
+function normalizeSampleProgress(samples: Q3LineSample[], progress: number): number {
+  if (!samples || samples.length === 0) return 0;
+  const first = samples[0].p;
+  const last = samples[samples.length - 1].p;
+  const span = Math.max(last - first, 1e-6);
+  return Math.max(0, Math.min(1, (progress - first) / span));
+}
+
+function denormalizeSampleProgress(samples: Q3LineSample[], normalizedProgress: number): number {
+  if (!samples || samples.length === 0) return 0;
+  const first = samples[0].p;
+  const last = samples[samples.length - 1].p;
+  const span = Math.max(last - first, 1e-6);
+  const clamped = Math.max(0, Math.min(1, normalizedProgress));
+  return first + clamped * span;
+}
+
+function timeAtProgress(samples: Q3LineSample[], targetProgress: number, lapTimeSeconds: number): number | null {
+  if (!samples || samples.length === 0) return null;
+  if (samples.length === 1) return mapSampleToReplayTime(samples, lapTimeSeconds, samples[0].t);
+
+  const rawTargetProgress = denormalizeSampleProgress(samples, targetProgress);
+  if (rawTargetProgress <= samples[0].p) return mapSampleToReplayTime(samples, lapTimeSeconds, samples[0].t);
+  const last = samples[samples.length - 1];
+  if (rawTargetProgress >= last.p) return mapSampleToReplayTime(samples, lapTimeSeconds, last.t);
+
+  for (let i = 1; i < samples.length; i++) {
+    const curr = samples[i];
+    if (rawTargetProgress > curr.p) continue;
+    const prev = samples[i - 1];
+    const span = Math.max(curr.p - prev.p, 1e-6);
+    const ratio = (rawTargetProgress - prev.p) / span;
+    const sampleTime = prev.t + (curr.t - prev.t) * ratio;
+    return mapSampleToReplayTime(samples, lapTimeSeconds, sampleTime);
+  }
+
+  return mapSampleToReplayTime(samples, lapTimeSeconds, last.t);
+}
+
+function Q3LegendCar({ color, outlined = false }: { color: string; outlined?: boolean }) {
+  const body = outlined ? "#111827" : color;
+  const stroke = outlined ? color : "#FFFFFF";
+  const strokeWidth = outlined ? 1.4 : 1.1;
+  return (
+    <svg
+      width="16"
+      height="10"
+      viewBox="0 0 16 10"
+      aria-hidden="true"
+      className="shrink-0"
+      style={{ overflow: "visible" }}
+    >
+      <rect x="0.5" y="3" width="2.1" height="4" rx="0.6" fill={body} stroke={stroke} strokeWidth={strokeWidth} />
+      <rect x="2.8" y="3.2" width="7.1" height="3.6" rx="1.1" fill={body} stroke={stroke} strokeWidth={strokeWidth} />
+      <path d="M9.9 3.6 L14.1 5 L9.9 6.4 Z" fill={body} stroke={stroke} strokeWidth={strokeWidth} strokeLinejoin="round" />
+      <rect x="13.9" y="2.9" width="1.7" height="4.2" rx="0.6" fill={body} stroke={stroke} strokeWidth={strokeWidth} />
+      <circle cx="4.4" cy="2.6" r="0.95" fill="#0A0A0A" />
+      <circle cx="4.4" cy="7.4" r="0.95" fill="#0A0A0A" />
+      <circle cx="8.2" cy="2.6" r="0.95" fill="#0A0A0A" />
+      <circle cx="8.2" cy="7.4" r="0.95" fill="#0A0A0A" />
+    </svg>
+  );
+}
+
 export default function ReplayPage() {
   const params = useParams<{ year: string; round: string }>();
   const [searchParams] = useSearchParams();
@@ -88,6 +250,8 @@ export default function ReplayPage() {
   const [sectorFocusDriver, setSectorFocusDriver] = useState<string | null>(null);
   const [rcPanelOpen, setRcPanelOpen] = useState(false);
   const [rcPinned, setRcPinned] = useState(false);
+  const [q3CompareMode, setQ3CompareMode] = useState(false);
+  const [q3SelectedDrivers, setQ3SelectedDrivers] = useState<[string | null, string | null]>([null, null]);
 
   // Persist panel layout per session type
   const layoutCategory = sessionType === "R" || sessionType === "S" ? "race"
@@ -289,6 +453,12 @@ export default function ReplayPage() {
     downloaded ? `/api/sessions/${year}/${round}/laps?type=${sessionType}` : null,
   );
 
+  const { data: q3LinesResponse } = useApi<Q3LinesData>(
+    downloaded && (sessionType === "Q" || sessionType === "SQ")
+      ? `/api/sessions/${year}/${round}/q3-lines?type=${sessionType}`
+      : null,
+  );
+
   // Build lookup: driver -> lap_number -> lap_time
   const lapData = useMemo(() => {
     if (!lapsResponse?.laps) return undefined;
@@ -337,6 +507,212 @@ export default function ReplayPage() {
   }, [selectedDrivers.length, showTelemetry, effectiveTelemetryPosition]);
 
   const isRace = sessionType === "R" || sessionType === "S";
+  const isQualifyingSession = sessionType === "Q" || sessionType === "SQ";
+
+  const q3DriverMap = useMemo(() => {
+    const map = new Map<string, Q3LineDriver>();
+    for (const d of q3LinesResponse?.drivers || []) {
+      map.set(d.abbr, d);
+    }
+    return map;
+  }, [q3LinesResponse]);
+
+  useEffect(() => {
+    if (!isQualifyingSession) {
+      setQ3CompareMode(false);
+      setQ3SelectedDrivers([null, null]);
+      return;
+    }
+    const available = q3LinesResponse?.drivers || [];
+    if (available.length === 0) {
+      setQ3CompareMode(false);
+      setQ3SelectedDrivers([null, null]);
+      return;
+    }
+    const allowed = new Set(available.map((d) => d.abbr));
+    const defaults = q3LinesResponse?.default_pair || [];
+    const fallbackFirst = defaults[0] || available[0]?.abbr || null;
+    const fallbackSecond = defaults[1] || available[1]?.abbr || null;
+
+    setQ3SelectedDrivers((prev) => {
+      let first = prev[0];
+      let second = prev[1];
+      if (!first || !allowed.has(first)) first = fallbackFirst;
+      if (!second || !allowed.has(second) || second === first) second = fallbackSecond && fallbackSecond !== first ? fallbackSecond : (available.find((d) => d.abbr !== first)?.abbr || null);
+      if (first === prev[0] && second === prev[1]) return prev;
+      return [first, second];
+    });
+  }, [isQualifyingSession, q3LinesResponse]);
+
+  const q3CompareLines = useMemo<Q3CompareLine[]>(() => {
+    if (!q3CompareMode || !isQualifyingSession) return [];
+    const [a, b] = q3SelectedDrivers;
+    if (!a || !b || a === b) return [];
+    const d1 = q3DriverMap.get(a);
+    const d2 = q3DriverMap.get(b);
+    if (!d1 || !d2) return [];
+    const c1 = normalizeHexColor(d1.color);
+    const c2 = normalizeHexColor(d2.color);
+    const sameColor = c1 === c2;
+    const c2Adjusted = sameColor ? shiftHexColor(c2, 70) : c2;
+    return [
+      {
+        abbr: d1.abbr,
+        color: c1,
+        lapTimeSeconds: d1.lap_time_seconds,
+        samples: d1.samples,
+      },
+      {
+        abbr: d2.abbr,
+        color: c2Adjusted,
+        lapTimeSeconds: d2.lap_time_seconds,
+        samples: d2.samples,
+        lineDash: sameColor ? [8, 6] : undefined,
+        markerStyle: sameColor ? "outlined" : "solid",
+      },
+    ];
+  }, [isQualifyingSession, q3CompareMode, q3SelectedDrivers, q3DriverMap]);
+
+  const q3CompareActive = q3CompareMode && q3CompareLines.length === 2;
+  const q3TotalTime = useMemo(() => {
+    if (!q3CompareActive) return 0;
+    return Math.max(q3CompareLines[0].lapTimeSeconds, q3CompareLines[1].lapTimeSeconds, 0);
+  }, [q3CompareActive, q3CompareLines]);
+  const [q3PlaybackPlaying, setQ3PlaybackPlaying] = useState(false);
+  const [q3PlaybackSpeed, setQ3PlaybackSpeed] = useState(1);
+  const [q3PlaybackTime, setQ3PlaybackTime] = useState(0);
+  const [q3PlaybackFinished, setQ3PlaybackFinished] = useState(false);
+  const q3LastTickRef = useRef<number | null>(null);
+
+  const q3LiveDelta = useMemo(() => {
+    if (q3CompareLines.length !== 2) return null;
+    const a = q3CompareLines[0];
+    const b = q3CompareLines[1];
+
+    const aNow = Math.min(q3PlaybackTime, a.lapTimeSeconds);
+    const bNow = Math.min(q3PlaybackTime, b.lapTimeSeconds);
+    const aSampleTime = mapReplayToSampleTime(a.samples, a.lapTimeSeconds, aNow);
+    const bSampleTime = mapReplayToSampleTime(b.samples, b.lapTimeSeconds, bNow);
+    if (aSampleTime == null || bSampleTime == null) return null;
+    const aState = interpolateQ3StateAtSampleTime(a.samples, aSampleTime);
+    const bState = interpolateQ3StateAtSampleTime(b.samples, bSampleTime);
+    if (!aState || !bState) return null;
+
+    const aProgress = normalizeSampleProgress(a.samples, aState.p);
+    const bProgress = normalizeSampleProgress(b.samples, bState.p);
+    const progressDiff = aProgress - bProgress;
+    const tie = Math.abs(progressDiff) < 1e-4;
+    const leader = tie ? null : (progressDiff > 0 ? a : b);
+    const trailer = leader ? (leader.abbr === a.abbr ? b : a) : null;
+
+    let delta = 0;
+    if (leader && trailer) {
+      const leaderProgress = leader.abbr === a.abbr ? aProgress : bProgress;
+      const leaderTimeAtSameProgress = timeAtProgress(leader.samples, leaderProgress, leader.lapTimeSeconds);
+      const trailerTimeAtSameProgress = timeAtProgress(trailer.samples, leaderProgress, trailer.lapTimeSeconds);
+      if (leaderTimeAtSameProgress != null && trailerTimeAtSameProgress != null) {
+        delta = Math.max(0, trailerTimeAtSameProgress - leaderTimeAtSameProgress);
+      } else {
+        delta = Math.max(0, Math.abs(aNow - bNow));
+      }
+    }
+
+    const aheadText = leader ? `${leader.abbr} ahead` : "LEVEL";
+    return {
+      leaderAbbr: leader?.abbr ?? null,
+      deltaSeconds: delta,
+      text: `LIVE DELTA: +${delta.toFixed(3)}s • ${aheadText}`,
+    };
+  }, [q3CompareLines, q3PlaybackTime]);
+
+  const q3PairSignature = useMemo(
+    () => q3CompareLines.map((d) => `${d.abbr}:${d.lapTimeSeconds}`).join("|"),
+    [q3CompareLines],
+  );
+
+  useEffect(() => {
+    if (!q3CompareMode) {
+      setQ3PlaybackPlaying(false);
+      setQ3PlaybackTime(0);
+      setQ3PlaybackFinished(false);
+      q3LastTickRef.current = null;
+      return;
+    }
+    setQ3PlaybackPlaying(false);
+    setQ3PlaybackTime(0);
+    setQ3PlaybackFinished(false);
+    q3LastTickRef.current = null;
+  }, [q3CompareMode, q3PairSignature]);
+
+  useEffect(() => {
+    if (!q3CompareActive || !q3PlaybackPlaying || q3PlaybackFinished || q3TotalTime <= 0) {
+      q3LastTickRef.current = null;
+      return;
+    }
+
+    let rafId = 0;
+    const step = (ts: number) => {
+      if (q3LastTickRef.current == null) {
+        q3LastTickRef.current = ts;
+      }
+      const deltaSeconds = (ts - q3LastTickRef.current) / 1000;
+      q3LastTickRef.current = ts;
+
+      setQ3PlaybackTime((prev) => {
+        const next = prev + deltaSeconds * Math.max(q3PlaybackSpeed, 0.25);
+        if (next >= q3TotalTime) {
+          setQ3PlaybackPlaying(false);
+          setQ3PlaybackFinished(true);
+          q3LastTickRef.current = null;
+          return q3TotalTime;
+        }
+        return next;
+      });
+
+      rafId = window.requestAnimationFrame(step);
+    };
+
+    rafId = window.requestAnimationFrame(step);
+    return () => window.cancelAnimationFrame(rafId);
+  }, [q3CompareActive, q3PlaybackPlaying, q3PlaybackFinished, q3PlaybackSpeed, q3TotalTime]);
+
+  const q3Play = useCallback(() => {
+    if (!q3CompareActive || q3TotalTime <= 0) return;
+    if (q3PlaybackFinished || q3PlaybackTime >= q3TotalTime) {
+      setQ3PlaybackTime(0);
+      setQ3PlaybackFinished(false);
+    }
+    q3LastTickRef.current = null;
+    setQ3PlaybackPlaying(true);
+  }, [q3CompareActive, q3PlaybackFinished, q3PlaybackTime, q3TotalTime]);
+
+  const q3Pause = useCallback(() => {
+    setQ3PlaybackPlaying(false);
+    q3LastTickRef.current = null;
+  }, []);
+
+  const q3Seek = useCallback((time: number) => {
+    const clamped = Math.max(0, Math.min(q3TotalTime, time));
+    setQ3PlaybackTime(clamped);
+    const reachedEnd = q3TotalTime > 0 && clamped >= q3TotalTime;
+    setQ3PlaybackFinished(reachedEnd);
+    if (reachedEnd) {
+      setQ3PlaybackPlaying(false);
+    }
+    q3LastTickRef.current = null;
+  }, [q3TotalTime]);
+
+  const q3Reset = useCallback(() => {
+    setQ3PlaybackPlaying(false);
+    setQ3PlaybackTime(0);
+    setQ3PlaybackFinished(false);
+    q3LastTickRef.current = null;
+  }, []);
+
+  const q3SetSpeed = useCallback((speed: number) => {
+    setQ3PlaybackSpeed(speed);
+    q3LastTickRef.current = null;
+  }, []);
 
   // "Open all data panels" — must be before early returns to maintain hook order
   useEffect(() => {
@@ -527,6 +903,15 @@ export default function ReplayPage() {
   // On mobile, auto-hide team abbreviation if columns overflow the screen
   const mobileTeamAbbrHidden = isMobile && settings.showTeamAbbr && leaderboardWidthFull > (typeof window !== "undefined" ? window.innerWidth : 400);
   const leaderboardWidth = mobileTeamAbbrHidden ? leaderboardWidthFull - 28 : leaderboardWidthFull;
+  const compareActive = q3CompareActive;
+  const controlsUseQ3 = q3CompareMode && isQualifyingSession;
+  const replayTrackDrivers = drivers.filter((d) => !d.retired && !d.no_timing && !d.finished && (d.x !== 0 || d.y !== 0) && d.x > -0.5 && d.x < 1.5 && d.y > -0.5 && d.y < 1.5).map((d) => ({
+    abbr: d.abbr,
+    x: d.x,
+    y: d.y,
+    color: d.color,
+    position: d.position,
+  }));
 
   return (
     <div className="h-dvh flex flex-col bg-f1-dark overflow-hidden" style={{ paddingTop: "env(safe-area-inset-top)" }}>
@@ -745,21 +1130,97 @@ export default function ReplayPage() {
                 trackPoints={trackPoints}
                 rotation={rotation}
                 trackStatus={trackStatus}
-                drivers={drivers.filter((d) => !d.retired && !d.no_timing && !d.finished && (d.x !== 0 || d.y !== 0) && d.x > -0.5 && d.x < 1.5 && d.y > -0.5 && d.y < 1.5).map((d) => ({
-                  abbr: d.abbr,
-                  x: d.x,
-                  y: d.y,
-                  color: d.color,
-                  position: d.position,
-                }))}
-                highlightedDrivers={selectedDrivers}
+                drivers={compareActive ? [] : replayTrackDrivers}
+                highlightedDrivers={compareActive ? [] : selectedDrivers}
                 playbackSpeed={replay.speed}
                 showDriverNames={settings.showDriverNames}
                 sectorOverlay={sectorOverlay}
                 corners={settings.showCorners ? trackData?.corners : null}
                 marshalSectors={trackData?.marshal_sectors}
                 sectorFlags={replay.frame?.sector_flags}
+                q3CompareLines={compareActive ? q3CompareLines : null}
+                q3CompareElapsedSeconds={compareActive ? q3PlaybackTime : 0}
               />
+
+              {isQualifyingSession && (q3LinesResponse?.drivers?.length || 0) > 0 && (
+                <div className="absolute top-3 left-3 z-20 bg-f1-card/90 border border-f1-border rounded px-2 py-1.5 backdrop-blur-sm max-w-[280px]">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setQ3CompareMode((v) => !v)}
+                      disabled={(q3LinesResponse?.drivers?.length || 0) < 2}
+                      className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors ${
+                        q3CompareMode
+                          ? "bg-f1-red border-f1-red text-white"
+                          : "bg-transparent border-f1-border text-f1-muted hover:text-white"
+                      } disabled:opacity-50 disabled:cursor-not-allowed`}
+                    >
+                      Q3 Lines
+                    </button>
+                    {q3CompareMode && q3LiveDelta && (
+                      <span className="text-[10px] font-bold text-white tabular-nums">{q3LiveDelta.text}</span>
+                    )}
+                  </div>
+                  {q3CompareMode && (
+                    <div className="mt-1.5 space-y-1">
+                      <div className="flex items-center gap-1">
+                        <select
+                          value={q3SelectedDrivers[0] || ""}
+                          onChange={(e) => setQ3SelectedDrivers((prev) => [e.target.value || null, prev[1]])}
+                          className="flex-1 bg-f1-dark border border-f1-border rounded px-1.5 py-1 text-[10px] text-white"
+                        >
+                          <option value="" disabled>Select Driver 1</option>
+                          {(q3LinesResponse?.drivers || []).map((d) => (
+                            <option key={d.abbr} value={d.abbr} disabled={d.abbr === q3SelectedDrivers[1]}>
+                              {d.abbr} ({d.lap_time})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <select
+                          value={q3SelectedDrivers[1] || ""}
+                          onChange={(e) => setQ3SelectedDrivers((prev) => [prev[0], e.target.value || null])}
+                          className="flex-1 bg-f1-dark border border-f1-border rounded px-1.5 py-1 text-[10px] text-white"
+                        >
+                          <option value="" disabled>Select Driver 2</option>
+                          {(q3LinesResponse?.drivers || []).map((d) => (
+                            <option key={d.abbr} value={d.abbr} disabled={d.abbr === q3SelectedDrivers[0]}>
+                              {d.abbr} ({d.lap_time})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {q3CompareLines.length === 2 && (
+                        <div className="space-y-1 pt-1">
+                          {q3CompareLines.map((line) => {
+                            const lineMeta = q3DriverMap.get(line.abbr);
+                            return (
+                              <div key={line.abbr} className="flex items-center gap-1 text-[10px] text-white">
+                                <span
+                                  className="inline-block w-5 border-t-2"
+                                  style={{
+                                    borderTopColor: line.color,
+                                    borderTopStyle: line.lineDash?.length ? "dashed" : "solid",
+                                  }}
+                                />
+                                <Q3LegendCar color={line.color} outlined={line.markerStyle === "outlined"} />
+                                <span className="font-bold">{line.abbr}</span>
+                                <span className="text-f1-muted">{lineMeta?.lap_time}</span>
+                                {q3LiveDelta?.leaderAbbr === line.abbr && (
+                                  <span className="ml-auto text-[9px] font-bold text-green-300">AHEAD</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {q3CompareLines.length !== 2 && (
+                        <p className="text-[9px] text-f1-muted">Select two Q3 drivers to start the comparison.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Telemetry now in bottom drawer */}
 
@@ -1096,21 +1557,21 @@ export default function ReplayPage() {
 
       {/* Playback controls */}
       <PlaybackControls
-        playing={replay.playing}
-        speed={replay.speed}
-        currentTime={replay.frame?.timestamp || 0}
-        totalTime={effectiveTotalTime}
-        currentLap={replay.frame?.lap || 0}
-        totalLaps={replay.totalLaps}
-        finished={replay.finished}
+        playing={controlsUseQ3 ? q3PlaybackPlaying : replay.playing}
+        speed={controlsUseQ3 ? q3PlaybackSpeed : replay.speed}
+        currentTime={controlsUseQ3 ? q3PlaybackTime : (replay.frame?.timestamp || 0)}
+        totalTime={controlsUseQ3 ? q3TotalTime : effectiveTotalTime}
+        currentLap={controlsUseQ3 ? 0 : (replay.frame?.lap || 0)}
+        totalLaps={controlsUseQ3 ? 0 : replay.totalLaps}
+        finished={controlsUseQ3 ? q3PlaybackFinished : replay.finished}
         showSessionTime={settings.showSessionTime}
-        onPlay={replay.play}
-        onPause={replay.pause}
-        onSpeedChange={replay.setSpeed}
-        onSeek={replay.seek}
-        onSeekToLap={replay.seekToLap}
-        onReset={replay.reset}
-        isRace={isRace}
+        onPlay={controlsUseQ3 ? q3Play : replay.play}
+        onPause={controlsUseQ3 ? q3Pause : replay.pause}
+        onSpeedChange={controlsUseQ3 ? q3SetSpeed : replay.setSpeed}
+        onSeek={controlsUseQ3 ? q3Seek : replay.seek}
+        onSeekToLap={controlsUseQ3 ? undefined : replay.seekToLap}
+        onReset={controlsUseQ3 ? q3Reset : replay.reset}
+        isRace={controlsUseQ3 ? false : isRace}
         onPiP={!isMobile && !isIOS ? () => setPipActive(true) : undefined}
         pipActive={pipActive}
         onFullscreen={!isMobile ? () => {
@@ -1123,8 +1584,8 @@ export default function ReplayPage() {
           }
         } : undefined}
         fullscreen={fullscreen}
-        qualiPhase={replay.frame?.quali_phase}
-        qualiPhases={replay.qualiPhases}
+        qualiPhase={controlsUseQ3 ? null : replay.frame?.quali_phase}
+        qualiPhases={controlsUseQ3 ? [] : replay.qualiPhases}
       />
 
       {/* Document PiP window — visible across tabs */}
@@ -1171,20 +1632,16 @@ export default function ReplayPage() {
                     trackPoints={trackPoints}
                     rotation={rotation}
                     trackStatus={trackStatus}
-                    drivers={drivers.filter((d) => !d.retired && !d.no_timing && !d.finished && (d.x !== 0 || d.y !== 0) && d.x > -0.5 && d.x < 1.5 && d.y > -0.5 && d.y < 1.5).map((d) => ({
-                      abbr: d.abbr,
-                      x: d.x,
-                      y: d.y,
-                      color: d.color,
-                      position: d.position,
-                    }))}
-                    highlightedDrivers={selectedDrivers}
+                    drivers={compareActive ? [] : replayTrackDrivers}
+                    highlightedDrivers={compareActive ? [] : selectedDrivers}
                     playbackSpeed={replay.speed}
                     showDriverNames={settings.showDriverNames}
                     sectorOverlay={sectorOverlay}
                     corners={settings.showCorners ? trackData?.corners : null}
                     marshalSectors={trackData?.marshal_sectors}
                     sectorFlags={replay.frame?.sector_flags}
+                    q3CompareLines={compareActive ? q3CompareLines : null}
+                    q3CompareElapsedSeconds={compareActive ? q3PlaybackTime : 0}
                   />
                 </div>
               )}
@@ -1281,23 +1738,23 @@ export default function ReplayPage() {
             {/* PiP Playback Controls */}
             <div className="flex-shrink-0">
               <PlaybackControls
-                playing={replay.playing}
-                speed={replay.speed}
-                currentTime={replay.frame?.timestamp || 0}
-                totalTime={effectiveTotalTime}
-                currentLap={replay.frame?.lap || 0}
-                totalLaps={replay.totalLaps}
-                finished={replay.finished}
+                playing={controlsUseQ3 ? q3PlaybackPlaying : replay.playing}
+                speed={controlsUseQ3 ? q3PlaybackSpeed : replay.speed}
+                currentTime={controlsUseQ3 ? q3PlaybackTime : (replay.frame?.timestamp || 0)}
+                totalTime={controlsUseQ3 ? q3TotalTime : effectiveTotalTime}
+                currentLap={controlsUseQ3 ? 0 : (replay.frame?.lap || 0)}
+                totalLaps={controlsUseQ3 ? 0 : replay.totalLaps}
+                finished={controlsUseQ3 ? q3PlaybackFinished : replay.finished}
                 showSessionTime={settings.showSessionTime}
-                onPlay={replay.play}
-                onPause={replay.pause}
-                onSpeedChange={replay.setSpeed}
-                onSeek={replay.seek}
-                onSeekToLap={replay.seekToLap}
-                onReset={replay.reset}
-                isRace={isRace}
-                qualiPhase={replay.frame?.quali_phase}
-                qualiPhases={replay.qualiPhases}
+                onPlay={controlsUseQ3 ? q3Play : replay.play}
+                onPause={controlsUseQ3 ? q3Pause : replay.pause}
+                onSpeedChange={controlsUseQ3 ? q3SetSpeed : replay.setSpeed}
+                onSeek={controlsUseQ3 ? q3Seek : replay.seek}
+                onSeekToLap={controlsUseQ3 ? undefined : replay.seekToLap}
+                onReset={controlsUseQ3 ? q3Reset : replay.reset}
+                isRace={controlsUseQ3 ? false : isRace}
+                qualiPhase={controlsUseQ3 ? null : replay.frame?.quali_phase}
+                qualiPhases={controlsUseQ3 ? [] : replay.qualiPhases}
               />
             </div>
           </div>
