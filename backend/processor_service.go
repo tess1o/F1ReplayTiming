@@ -384,26 +384,56 @@ func buildTrackJSON(pos map[string][]posSample, timing map[string][]timingState,
 	}
 }
 
+const (
+	q3ComparePhase        = "Q3"
+	q3SectorTolerance     = 0.001
+	q3MinLinePointCount   = 10
+	q3MaxLineSampleCount  = 1200
+	q3BoundaryMaxGap      = 1.5
+	q3BoundaryPad         = 0.35
+	q3BoundaryNearestSnap = 1.5
+)
+
+type q3BestLap struct {
+	Lap          int
+	TimeStr      string
+	Seconds      float64
+	EndTs        float64
+	Sector1      string
+	Sector2      string
+	Sector3      string
+	Sector1Color string
+	Sector2Color string
+	Sector3Color string
+}
+
+type q3OverallSectorLeader struct {
+	Abbr       string
+	Sector     float64
+	LapSeconds float64
+}
+
+type q3SectorStats struct {
+	overallLeaders [3]q3OverallSectorLeader
+	driverBest     map[string][3]float64
+	driverCount    map[string][3]int
+}
+
+func newQ3SectorStats(capHint int) q3SectorStats {
+	stats := q3SectorStats{
+		driverBest:  make(map[string][3]float64, capHint),
+		driverCount: make(map[string][3]int, capHint),
+	}
+	for i := 0; i < 3; i++ {
+		stats.overallLeaders[i] = q3OverallSectorLeader{
+			Sector:     math.MaxFloat64,
+			LapSeconds: math.MaxFloat64,
+		}
+	}
+	return stats
+}
+
 func buildQ3LinesJSON(drivers []driverMeta, byNum map[string]driverMeta, laps []map[string]any, pos map[string][]posSample, timing map[string][]timingState, track map[string]any) map[string]any {
-	type bestLap struct {
-		Lap          int
-		TimeStr      string
-		Seconds      float64
-		EndTs        float64
-		Sector1      string
-		Sector2      string
-		Sector3      string
-		Sector1Color string
-		Sector2Color string
-		Sector3Color string
-	}
-	type q3OverallSectorLeader struct {
-		Abbr       string
-		Sector     float64
-		LapSeconds float64
-	}
-	const phaseName = "Q3"
-	const sectorTol = 0.001
 	abbrToMeta := make(map[string]driverMeta, len(drivers))
 	abbrToNumber := make(map[string]string, len(drivers))
 	for _, d := range drivers {
@@ -411,211 +441,33 @@ func buildQ3LinesJSON(drivers []driverMeta, byNum map[string]driverMeta, laps []
 		abbrToNumber[d.Abbr] = d.Number
 	}
 
-	bestByDriver := make(map[string]bestLap, len(laps))
-	overallSectorLeaders := [3]q3OverallSectorLeader{
-		{Sector: math.MaxFloat64, LapSeconds: math.MaxFloat64},
-		{Sector: math.MaxFloat64, LapSeconds: math.MaxFloat64},
-		{Sector: math.MaxFloat64, LapSeconds: math.MaxFloat64},
-	}
-	driverSectorBest := make(map[string][3]float64, len(drivers))
-	driverSectorCount := make(map[string][3]int, len(drivers))
-	for _, lap := range laps {
-		if strings.ToUpper(strings.TrimSpace(asString(lap["qualifying_phase"]))) != phaseName {
-			continue
-		}
-		abbr := strings.ToUpper(strings.TrimSpace(asString(lap["driver"])))
-		if abbr == "" {
-			continue
-		}
-		lapNum := asInt(lap["lap_number"])
-		if lapNum <= 0 {
-			continue
-		}
-		lapTime := strings.TrimSpace(asString(lap["lap_time"]))
-		secs, ok := parseLapTimeToSeconds(lapTime)
-		if !ok {
-			continue
-		}
-		lapEndTs := asFloat(lap["time"], 0)
-
-		s1Raw := strings.TrimSpace(asString(lap["sector1"]))
-		s2Raw := strings.TrimSpace(asString(lap["sector2"]))
-		s3Raw := strings.TrimSpace(asString(lap["sector3"]))
-		sectorRaw := [3]string{s1Raw, s2Raw, s3Raw}
-		s1Color := normalizeOfficialSectorColor(asString(lap["sector1_color"]))
-		s2Color := normalizeOfficialSectorColor(asString(lap["sector2_color"]))
-		s3Color := normalizeOfficialSectorColor(asString(lap["sector3_color"]))
-		if _, exists := driverSectorBest[abbr]; !exists {
-			driverSectorBest[abbr] = [3]float64{math.MaxFloat64, math.MaxFloat64, math.MaxFloat64}
-		}
-		bestBySector := driverSectorBest[abbr]
-		sectorCount := driverSectorCount[abbr]
-		for i := 0; i < len(sectorRaw); i++ {
-			sectorSeconds, ok := parseLapTimeToSeconds(sectorRaw[i])
-			if !ok {
-				continue
-			}
-			sectorCount[i]++
-			if sectorSeconds < bestBySector[i]-sectorTol {
-				bestBySector[i] = sectorSeconds
-			}
-			leader := overallSectorLeaders[i]
-			betterSector := sectorSeconds < leader.Sector-sectorTol
-			tiedSector := math.Abs(sectorSeconds-leader.Sector) <= sectorTol
-			tieBreakBetter := tiedSector && (secs < leader.LapSeconds-sectorTol || (math.Abs(secs-leader.LapSeconds) <= sectorTol && (leader.Abbr == "" || abbr < leader.Abbr)))
-			if betterSector || tieBreakBetter {
-				overallSectorLeaders[i] = q3OverallSectorLeader{
-					Abbr:       abbr,
-					Sector:     sectorSeconds,
-					LapSeconds: secs,
-				}
-			}
-		}
-		driverSectorBest[abbr] = bestBySector
-		driverSectorCount[abbr] = sectorCount
-
-		prev, exists := bestByDriver[abbr]
-		if !exists || secs < prev.Seconds {
-			bestByDriver[abbr] = bestLap{
-				Lap:          lapNum,
-				TimeStr:      lapTime,
-				Seconds:      secs,
-				EndTs:        lapEndTs,
-				Sector1:      s1Raw,
-				Sector2:      s2Raw,
-				Sector3:      s3Raw,
-				Sector1Color: s1Color,
-				Sector2Color: s2Color,
-				Sector3Color: s3Color,
-			}
-		}
-	}
+	bestByDriver, sectorStats := collectQ3BestLapsAndSectorStats(laps, len(drivers))
 	if len(bestByDriver) == 0 {
 		return nil
 	}
 
-	norm, _ := track["norm"].(map[string]any)
-	xMin := asFloat(norm["x_min"], 0)
-	yMin := asFloat(norm["y_min"], 0)
-	scale := asFloat(norm["scale"], 1)
-	if scale <= 0 {
-		scale = 1
-	}
-	anchorX, anchorY, hasAnchor := extractTrackStartAnchorRaw(track, xMin, yMin, scale)
-
+	xMin, yMin, scale := q3TrackNorm(track)
 	entries := make([]map[string]any, 0, len(bestByDriver))
+
 	for abbr, best := range bestByDriver {
 		number := abbrToNumber[abbr]
 		if number == "" {
 			continue
 		}
-		driverPos := pos[number]
-		driverTiming := timing[number]
-		if len(driverPos) == 0 || len(driverTiming) == 0 {
+		lapPoints := extractQ3LapPoints(pos[number], timing[number], best)
+		if len(lapPoints) < q3MinLinePointCount {
 			continue
 		}
 
-		lapPoints := make([]posSample, 0, 1024)
-		if best.EndTs > 0 && best.Seconds > 0 {
-			lapStartTs := best.EndTs - best.Seconds
-			const boundaryPad = 0.35
-			const boundarySnap = 1.5
-
-			if ps := nearestPosSampleWithin(driverPos, lapStartTs, boundarySnap); ps != nil {
-				lapPoints = append(lapPoints, *ps)
-			}
-			for _, p := range driverPos {
-				if p.T < lapStartTs-boundaryPad || p.T > best.EndTs+boundaryPad {
-					continue
-				}
-				lapPoints = append(lapPoints, p)
-			}
-			if pe := nearestPosSampleWithin(driverPos, best.EndTs, boundarySnap); pe != nil {
-				lapPoints = append(lapPoints, *pe)
-			}
-		}
-		// Fallback for older artifacts where lap completion timestamp may be unavailable.
-		if len(lapPoints) < 10 {
-			lapPoints = lapPoints[:0]
-			for _, p := range driverPos {
-				if lapAt(driverTiming, p.T) != best.Lap {
-					continue
-				}
-				lapPoints = append(lapPoints, p)
-			}
-		}
-		sort.Slice(lapPoints, func(i, j int) bool { return lapPoints[i].T < lapPoints[j].T })
-		if len(lapPoints) < 10 {
+		samples := buildQ3LineSamples(lapPoints, best.Seconds, xMin, yMin, scale)
+		if len(samples) < q3MinLinePointCount {
 			continue
 		}
-		lapPoints = sanitizeTrackLap(lapPoints)
-		if len(lapPoints) < 10 {
-			continue
-		}
-		if hasAnchor {
-			lapPoints = rotateLapPointsToAnchor(lapPoints, anchorX, anchorY)
-		}
-
-		stepDist := make([]float64, len(lapPoints))
-		totalDist := 0.0
-		for i := 1; i < len(lapPoints); i++ {
-			totalDist += pointDistance(lapPoints[i-1], lapPoints[i])
-			stepDist[i] = totalDist
-		}
-		if totalDist <= 0 {
-			continue
-		}
-
-		samples := make([]map[string]any, 0, len(lapPoints))
-		for i := 0; i < len(lapPoints); i++ {
-			lp := lapPoints[i]
-			progress := stepDist[i] / totalDist
-			if progress < 0 {
-				progress = 0
-			}
-			if progress > 1 {
-				progress = 1
-			}
-			elapsed := progress * best.Seconds
-			samples = append(samples, map[string]any{
-				"x": normalizeCoord(lp.X, xMin, scale),
-				"y": normalizeCoord(lp.Y, yMin, scale),
-				"t": round3(elapsed),
-				"p": round6(progress),
-			})
-		}
-		normalizeQ3SampleTimeline(samples, best.Seconds)
-		samples = decimateLineSamples(samples, 1200)
 
 		meta, ok := abbrToMeta[abbr]
 		if !ok {
 			meta = byNum[number]
 		}
-		sectorColors := map[string]any{"s1": nil, "s2": nil, "s3": nil}
-		sectorRaw := [3]string{best.Sector1, best.Sector2, best.Sector3}
-		officialColors := [3]string{best.Sector1Color, best.Sector2Color, best.Sector3Color}
-		driverBestBySector := driverSectorBest[abbr]
-		driverCountBySector := driverSectorCount[abbr]
-		for i, key := range []string{"s1", "s2", "s3"} {
-			color := normalizeOfficialSectorColor(officialColors[i])
-			if color == "" {
-				sectorSeconds, ok := parseLapTimeToSeconds(sectorRaw[i])
-				if ok {
-					leader := overallSectorLeaders[i]
-					if leader.Abbr == abbr && leader.Sector < math.MaxFloat64 && math.Abs(sectorSeconds-leader.Sector) <= sectorTol {
-						color = "purple"
-					} else if driverCountBySector[i] <= 1 {
-						color = "green"
-					} else if driverBestBySector[i] < math.MaxFloat64 && math.Abs(sectorSeconds-driverBestBySector[i]) <= sectorTol {
-						color = "green"
-					} else {
-						color = "yellow"
-					}
-				}
-			}
-			sectorColors[key] = nilIfEmptyString(color)
-		}
-
 		entries = append(entries, map[string]any{
 			"abbr":             abbr,
 			"driver_number":    number,
@@ -627,11 +479,12 @@ func buildQ3LinesJSON(drivers []driverMeta, byNum map[string]driverMeta, laps []
 			"sector1":          nilIfEmptyString(best.Sector1),
 			"sector2":          nilIfEmptyString(best.Sector2),
 			"sector3":          nilIfEmptyString(best.Sector3),
-			"sector_colors":    sectorColors,
-			"phase":            phaseName,
+			"sector_colors":    classifyQ3SectorColors(abbr, best, sectorStats),
+			"phase":            q3ComparePhase,
 			"samples":          samples,
 		})
 	}
+
 	if len(entries) == 0 {
 		return nil
 	}
@@ -646,19 +499,251 @@ func buildQ3LinesJSON(drivers []driverMeta, byNum map[string]driverMeta, laps []
 	})
 
 	defaultPair := make([]any, 0, 2)
-	if len(entries) > 0 {
-		defaultPair = append(defaultPair, asString(entries[0]["abbr"]))
-	}
+	defaultPair = append(defaultPair, asString(entries[0]["abbr"]))
 	if len(entries) > 1 {
 		defaultPair = append(defaultPair, asString(entries[1]["abbr"]))
 	}
 
 	return map[string]any{
-		"phase":        phaseName,
+		"phase":        q3ComparePhase,
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
 		"drivers":      entries,
 		"default_pair": defaultPair,
 	}
+}
+
+func collectQ3BestLapsAndSectorStats(laps []map[string]any, capHint int) (map[string]q3BestLap, q3SectorStats) {
+	stats := newQ3SectorStats(capHint)
+	bestByDriver := make(map[string]q3BestLap, len(laps))
+
+	for _, lap := range laps {
+		if strings.ToUpper(strings.TrimSpace(asString(lap["qualifying_phase"]))) != q3ComparePhase {
+			continue
+		}
+		abbr := strings.ToUpper(strings.TrimSpace(asString(lap["driver"])))
+		if abbr == "" {
+			continue
+		}
+
+		lapNumber := asInt(lap["lap_number"])
+		if lapNumber <= 0 {
+			continue
+		}
+
+		lapTime := strings.TrimSpace(asString(lap["lap_time"]))
+		lapSeconds, ok := parseLapTimeToSeconds(lapTime)
+		if !ok {
+			continue
+		}
+
+		bestLap := q3BestLap{
+			Lap:          lapNumber,
+			TimeStr:      lapTime,
+			Seconds:      lapSeconds,
+			EndTs:        asFloat(lap["time"], 0),
+			Sector1:      strings.TrimSpace(asString(lap["sector1"])),
+			Sector2:      strings.TrimSpace(asString(lap["sector2"])),
+			Sector3:      strings.TrimSpace(asString(lap["sector3"])),
+			Sector1Color: normalizeOfficialSectorColor(asString(lap["sector1_color"])),
+			Sector2Color: normalizeOfficialSectorColor(asString(lap["sector2_color"])),
+			Sector3Color: normalizeOfficialSectorColor(asString(lap["sector3_color"])),
+		}
+
+		updateQ3SectorStats(&stats, abbr, lapSeconds, [3]string{bestLap.Sector1, bestLap.Sector2, bestLap.Sector3})
+
+		prev, exists := bestByDriver[abbr]
+		if !exists || lapSeconds < prev.Seconds {
+			bestByDriver[abbr] = bestLap
+		}
+	}
+
+	return bestByDriver, stats
+}
+
+func updateQ3SectorStats(stats *q3SectorStats, abbr string, lapSeconds float64, sectors [3]string) {
+	if _, exists := stats.driverBest[abbr]; !exists {
+		stats.driverBest[abbr] = [3]float64{math.MaxFloat64, math.MaxFloat64, math.MaxFloat64}
+	}
+	driverBest := stats.driverBest[abbr]
+	driverCount := stats.driverCount[abbr]
+
+	for i := 0; i < len(sectors); i++ {
+		sectorSeconds, ok := parseLapTimeToSeconds(sectors[i])
+		if !ok {
+			continue
+		}
+
+		driverCount[i]++
+		if sectorSeconds < driverBest[i]-q3SectorTolerance {
+			driverBest[i] = sectorSeconds
+		}
+
+		leader := stats.overallLeaders[i]
+		isBetter := sectorSeconds < leader.Sector-q3SectorTolerance
+		isTied := math.Abs(sectorSeconds-leader.Sector) <= q3SectorTolerance
+		isTieBreakBetter := isTied && (lapSeconds < leader.LapSeconds-q3SectorTolerance ||
+			(math.Abs(lapSeconds-leader.LapSeconds) <= q3SectorTolerance &&
+				(leader.Abbr == "" || abbr < leader.Abbr)))
+		if isBetter || isTieBreakBetter {
+			stats.overallLeaders[i] = q3OverallSectorLeader{
+				Abbr:       abbr,
+				Sector:     sectorSeconds,
+				LapSeconds: lapSeconds,
+			}
+		}
+	}
+
+	stats.driverBest[abbr] = driverBest
+	stats.driverCount[abbr] = driverCount
+}
+
+func q3TrackNorm(track map[string]any) (float64, float64, float64) {
+	norm, _ := track["norm"].(map[string]any)
+	xMin := asFloat(norm["x_min"], 0)
+	yMin := asFloat(norm["y_min"], 0)
+	scale := asFloat(norm["scale"], 1)
+	if scale <= 0 {
+		scale = 1
+	}
+	return xMin, yMin, scale
+}
+
+func extractQ3LapPoints(driverPos []posSample, driverTiming []timingState, best q3BestLap) []posSample {
+	if len(driverPos) == 0 || len(driverTiming) == 0 {
+		return nil
+	}
+
+	var points []posSample
+	if best.EndTs > 0 && best.Seconds > 0 {
+		points = extractQ3LapPointsByTimestamp(driverPos, best)
+	}
+	if len(points) < q3MinLinePointCount {
+		points = extractQ3LapPointsByLapNumber(driverPos, driverTiming, best.Lap)
+	}
+	if len(points) < q3MinLinePointCount {
+		return nil
+	}
+
+	sort.Slice(points, func(i, j int) bool { return points[i].T < points[j].T })
+	points = sanitizeTrackLap(points)
+	if len(points) < q3MinLinePointCount {
+		return nil
+	}
+	return points
+}
+
+func extractQ3LapPointsByTimestamp(driverPos []posSample, best q3BestLap) []posSample {
+	lapStartTs := best.EndTs - best.Seconds
+	startPoint := interpolatePosSampleAt(driverPos, lapStartTs, q3BoundaryMaxGap)
+	endPoint := interpolatePosSampleAt(driverPos, best.EndTs, q3BoundaryMaxGap)
+	if startPoint != nil && endPoint != nil {
+		out := make([]posSample, 0, 1024)
+		out = append(out, *startPoint)
+		for _, p := range driverPos {
+			if p.T <= lapStartTs || p.T >= best.EndTs {
+				continue
+			}
+			out = append(out, p)
+		}
+		out = append(out, *endPoint)
+		return out
+	}
+
+	// Fallback for timelines where lap completion timestamps are not on the same absolute axis
+	// as position samples. This preserves compatibility for older cached artifacts/tests.
+	out := make([]posSample, 0, 1024)
+	if ps := nearestPosSampleWithin(driverPos, lapStartTs, q3BoundaryNearestSnap); ps != nil {
+		out = append(out, *ps)
+	}
+	for _, p := range driverPos {
+		if p.T < lapStartTs-q3BoundaryPad || p.T > best.EndTs+q3BoundaryPad {
+			continue
+		}
+		out = append(out, p)
+	}
+	if pe := nearestPosSampleWithin(driverPos, best.EndTs, q3BoundaryNearestSnap); pe != nil {
+		out = append(out, *pe)
+	}
+	return out
+}
+
+func extractQ3LapPointsByLapNumber(driverPos []posSample, driverTiming []timingState, lapNumber int) []posSample {
+	if lapNumber <= 0 {
+		return nil
+	}
+	out := make([]posSample, 0, 1024)
+	for _, p := range driverPos {
+		if lapAt(driverTiming, p.T) != lapNumber {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func buildQ3LineSamples(points []posSample, lapSeconds, xMin, yMin, scale float64) []map[string]any {
+	if len(points) < 2 || lapSeconds <= 0 {
+		return nil
+	}
+	stepDist := make([]float64, len(points))
+	totalDist := 0.0
+	for i := 1; i < len(points); i++ {
+		totalDist += pointDistance(points[i-1], points[i])
+		stepDist[i] = totalDist
+	}
+	if totalDist <= 0 {
+		return nil
+	}
+
+	samples := make([]map[string]any, 0, len(points))
+	for i, pt := range points {
+		progress := stepDist[i] / totalDist
+		if progress < 0 {
+			progress = 0
+		} else if progress > 1 {
+			progress = 1
+		}
+		samples = append(samples, map[string]any{
+			"x": normalizeCoord(pt.X, xMin, scale),
+			"y": normalizeCoord(pt.Y, yMin, scale),
+			"t": round3(progress * lapSeconds),
+			"p": round6(progress),
+		})
+	}
+	samples[0]["t"] = 0.0
+	samples[len(samples)-1]["t"] = round3(lapSeconds)
+	return decimateLineSamples(samples, q3MaxLineSampleCount)
+}
+
+func classifyQ3SectorColors(abbr string, best q3BestLap, stats q3SectorStats) map[string]any {
+	colors := map[string]any{"s1": nil, "s2": nil, "s3": nil}
+	sectorRaw := [3]string{best.Sector1, best.Sector2, best.Sector3}
+	officialColors := [3]string{best.Sector1Color, best.Sector2Color, best.Sector3Color}
+	driverBest := stats.driverBest[abbr]
+	driverCount := stats.driverCount[abbr]
+
+	for i, key := range []string{"s1", "s2", "s3"} {
+		color := normalizeOfficialSectorColor(officialColors[i])
+		if color == "" {
+			sectorSeconds, ok := parseLapTimeToSeconds(sectorRaw[i])
+			if ok {
+				leader := stats.overallLeaders[i]
+				switch {
+				case leader.Abbr == abbr && leader.Sector < math.MaxFloat64 && math.Abs(sectorSeconds-leader.Sector) <= q3SectorTolerance:
+					color = "purple"
+				case driverCount[i] <= 1:
+					color = "green"
+				case driverBest[i] < math.MaxFloat64 && math.Abs(sectorSeconds-driverBest[i]) <= q3SectorTolerance:
+					color = "green"
+				default:
+					color = "yellow"
+				}
+			}
+		}
+		colors[key] = nilIfEmptyString(color)
+	}
+
+	return colors
 }
 
 func normalizeOfficialSectorColor(raw string) string {
@@ -672,39 +757,6 @@ func normalizeOfficialSectorColor(raw string) string {
 	default:
 		return ""
 	}
-}
-
-func normalizeQ3SampleTimeline(samples []map[string]any, lapSeconds float64) {
-	if len(samples) == 0 || lapSeconds <= 0 {
-		return
-	}
-	firstT := asFloat(samples[0]["t"], 0)
-	lastT := asFloat(samples[len(samples)-1]["t"], firstT)
-	span := lastT - firstT
-	if span <= 1e-6 {
-		for i := range samples {
-			progress := asFloat(samples[i]["p"], 0)
-			if progress < 0 {
-				progress = 0
-			} else if progress > 1 {
-				progress = 1
-			}
-			samples[i]["t"] = round3(progress * lapSeconds)
-		}
-	} else {
-		for i := range samples {
-			t := asFloat(samples[i]["t"], firstT)
-			ratio := (t - firstT) / span
-			if ratio < 0 {
-				ratio = 0
-			} else if ratio > 1 {
-				ratio = 1
-			}
-			samples[i]["t"] = round3(ratio * lapSeconds)
-		}
-	}
-	samples[0]["t"] = 0.0
-	samples[len(samples)-1]["t"] = round3(lapSeconds)
 }
 
 func parseLapTimeToSeconds(raw string) (float64, bool) {
@@ -872,59 +924,6 @@ func sanitizeTrackLap(points []posSample) []posSample {
 	if len(out) < 3 {
 		return points
 	}
-	return out
-}
-
-func extractTrackStartAnchorRaw(track map[string]any, xMin, yMin, scale float64) (float64, float64, bool) {
-	if scale <= 0 {
-		return 0, 0, false
-	}
-	var first map[string]any
-	switch trackPoints := track["track_points"].(type) {
-	case []any:
-		if len(trackPoints) == 0 {
-			return 0, 0, false
-		}
-		m, ok := trackPoints[0].(map[string]any)
-		if !ok {
-			return 0, 0, false
-		}
-		first = m
-	case []map[string]any:
-		if len(trackPoints) == 0 {
-			return 0, 0, false
-		}
-		first = trackPoints[0]
-	default:
-		return 0, 0, false
-	}
-	xNorm := asFloat(first["x"], math.NaN())
-	yNorm := asFloat(first["y"], math.NaN())
-	if math.IsNaN(xNorm) || math.IsNaN(yNorm) {
-		return 0, 0, false
-	}
-	return xMin + xNorm*scale, yMin + yNorm*scale, true
-}
-
-func rotateLapPointsToAnchor(points []posSample, anchorX, anchorY float64) []posSample {
-	if len(points) < 2 {
-		return points
-	}
-	bestIdx := 0
-	bestDist := math.MaxFloat64
-	for i, pt := range points {
-		d := math.Hypot(pt.X-anchorX, pt.Y-anchorY)
-		if d < bestDist {
-			bestDist = d
-			bestIdx = i
-		}
-	}
-	if bestIdx == 0 {
-		return points
-	}
-	out := make([]posSample, 0, len(points))
-	out = append(out, points[bestIdx:]...)
-	out = append(out, points[:bestIdx]...)
 	return out
 }
 

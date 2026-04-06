@@ -563,107 +563,6 @@ func TestBuildQ3LinesJSONFallbacksMissingSectorColorsWithinQ3(t *testing.T) {
 	}
 }
 
-func TestBuildQ3LinesJSONAlignsDriverSamplesToTrackAnchor(t *testing.T) {
-	drivers := []driverMeta{
-		{Number: "1", Abbr: "ANT", Team: "Mercedes", Color: "00D2BE"},
-		{Number: "2", Abbr: "RUS", Team: "Mercedes", Color: "00D2BE"},
-	}
-	byNum := map[string]driverMeta{
-		"1": drivers[0],
-		"2": drivers[1],
-	}
-	laps := []map[string]any{
-		{
-			"driver":           "ANT",
-			"lap_number":       1,
-			"lap_time":         "1:00.000",
-			"time":             60.0,
-			"qualifying_phase": "Q3",
-			"sector1":          "20.000",
-			"sector2":          "20.000",
-			"sector3":          "20.000",
-		},
-		{
-			"driver":           "RUS",
-			"lap_number":       1,
-			"lap_time":         "1:00.200",
-			"time":             60.2,
-			"qualifying_phase": "Q3",
-			"sector1":          "20.100",
-			"sector2":          "20.000",
-			"sector3":          "20.100",
-		},
-	}
-
-	buildLoop := func(startT, endT, phase float64) []posSample {
-		points := make([]posSample, 0, 180)
-		const total = 180
-		for i := 0; i < total; i++ {
-			progress := float64(i) / float64(total-1)
-			theta := math.Mod(progress+phase, 1.0) * 2 * math.Pi
-			points = append(points, posSample{
-				T: startT + progress*(endT-startT),
-				X: math.Cos(theta),
-				Y: math.Sin(theta),
-			})
-		}
-		return points
-	}
-
-	pos := map[string][]posSample{
-		// ANT already starts near track start/finish anchor (raw x=1,y=0).
-		"1": buildLoop(0.0, 60.0, 0.0),
-		// RUS starts half a lap away; without anchor rotation this appears phase-shifted.
-		"2": buildLoop(0.0, 60.2, 0.5),
-	}
-	timing := map[string][]timingState{
-		"1": {{T: 60.0, Lap: 1}},
-		"2": {{T: 60.2, Lap: 1}},
-	}
-	track := map[string]any{
-		"track_points": []any{
-			map[string]any{"x": 1.0, "y": 0.5},
-		},
-		"norm": map[string]any{
-			"x_min": -1.0,
-			"y_min": -1.0,
-			"scale": 2.0,
-		},
-	}
-
-	out := buildQ3LinesJSON(drivers, byNum, laps, pos, timing, track)
-	if out == nil {
-		t.Fatalf("expected q3 lines output")
-	}
-	rows, ok := out["drivers"].([]map[string]any)
-	if !ok || len(rows) != 2 {
-		t.Fatalf("expected 2 drivers in q3 output, got %#v", out["drivers"])
-	}
-
-	firstXByAbbr := map[string]float64{}
-	firstYByAbbr := map[string]float64{}
-	for _, row := range rows {
-		abbr := asString(row["abbr"])
-		samples, _ := row["samples"].([]map[string]any)
-		if len(samples) == 0 {
-			t.Fatalf("expected non-empty samples for %s", abbr)
-		}
-		firstXByAbbr[abbr] = asFloat(samples[0]["x"], -1)
-		firstYByAbbr[abbr] = asFloat(samples[0]["y"], -1)
-	}
-
-	antX, antOK := firstXByAbbr["ANT"]
-	rusX, rusOK := firstXByAbbr["RUS"]
-	if !antOK || !rusOK {
-		t.Fatalf("missing first sample positions: %#v", firstXByAbbr)
-	}
-	antY := firstYByAbbr["ANT"]
-	rusY := firstYByAbbr["RUS"]
-	if math.Abs(antX-rusX) > 0.03 || math.Abs(antY-rusY) > 0.03 {
-		t.Fatalf("expected both drivers aligned to the same start anchor; ANT=(%.3f,%.3f) RUS=(%.3f,%.3f)", antX, antY, rusX, rusY)
-	}
-}
-
 func TestReplayWriterAndIndexOffsets(t *testing.T) {
 	dir := t.TempDir()
 	replayPath := filepath.Join(dir, "replay.json")
@@ -733,6 +632,19 @@ func TestTimelineLookups(t *testing.T) {
 	stale := nearestPosSampleWithin(pos, 100.0, 10.0)
 	if stale != nil {
 		t.Fatalf("nearestPosSampleWithin expected nil for stale sample")
+	}
+
+	interp := interpolatePosSampleAt(pos, 2.5, 1.0)
+	if interp == nil {
+		t.Fatalf("interpolatePosSampleAt expected interpolated sample")
+	}
+	if math.Abs(interp.T-2.5) > 1e-9 || math.Abs(interp.X-13.0) > 1e-9 || math.Abs(interp.Y-23.0) > 1e-9 {
+		t.Fatalf("unexpected interpolated sample: %+v", interp)
+	}
+
+	tooFar := interpolatePosSampleAt(pos, 2.5, 0.4)
+	if tooFar != nil {
+		t.Fatalf("interpolatePosSampleAt expected nil when boundary gap exceeds limit")
 	}
 }
 

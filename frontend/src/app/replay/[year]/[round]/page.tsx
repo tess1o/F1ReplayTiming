@@ -14,6 +14,16 @@ import TelemetryChart from "@/components/TelemetryChart";
 import PiPWindow from "@/components/PiPWindow";
 import LapAnalysisPanel from "@/components/LapAnalysisPanel";
 import type { SectorOverlay, Q3CompareLine } from "@/lib/trackRenderer";
+import {
+  type Q3LineDriver,
+  type Q3LinesData,
+  type Q3SectorCell,
+  buildQ3CompareLines,
+  buildQ3SectorReveal,
+  computeQ3LapDelta,
+  computeQ3LiveDelta,
+  computeQ3SectorDelta,
+} from "@/lib/q3Compare";
 import { Maximize, Minimize, ArrowUpRight } from "lucide-react";
 
 interface TrackData {
@@ -53,234 +63,6 @@ interface DownloadStatus {
   queue_position?: number;
   attempt?: number;
   max_attempts?: number;
-}
-
-interface Q3LineSample {
-  x: number;
-  y: number;
-  t: number;
-  p: number;
-}
-
-interface Q3LineDriver {
-  abbr: string;
-  driver_number: string;
-  team: string;
-  color: string;
-  lap_number: number;
-  lap_time: string;
-  lap_time_seconds: number;
-  sector1?: string | null;
-  sector2?: string | null;
-  sector3?: string | null;
-  sector_colors?: {
-    s1?: "purple" | "green" | "yellow" | null;
-    s2?: "purple" | "green" | "yellow" | null;
-    s3?: "purple" | "green" | "yellow" | null;
-  } | null;
-  phase: "Q3";
-  samples: Q3LineSample[];
-}
-
-interface Q3LinesData {
-  phase: "Q3";
-  generated_at: string;
-  default_pair: string[];
-  drivers: Q3LineDriver[];
-}
-
-function normalizeHexColor(input: string): string {
-  const raw = (input || "").trim();
-  if (!raw) return "#FFFFFF";
-  const withHash = raw.startsWith("#") ? raw : `#${raw}`;
-  if (withHash.length === 4) {
-    const r = withHash[1];
-    const g = withHash[2];
-    const b = withHash[3];
-    return `#${r}${r}${g}${g}${b}${b}`.toUpperCase();
-  }
-  if (withHash.length === 7) return withHash.toUpperCase();
-  return "#FFFFFF";
-}
-
-function shiftHexColor(input: string, shift: number): string {
-  const hex = normalizeHexColor(input);
-  const parse = (start: number) => Number.parseInt(hex.slice(start, start + 2), 16);
-  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
-  const r = parse(1);
-  const g = parse(3);
-  const b = parse(5);
-  const nr = clamp(r + shift);
-  const ng = clamp(g + shift);
-  const nb = clamp(b + shift);
-  return `#${nr.toString(16).padStart(2, "0")}${ng.toString(16).padStart(2, "0")}${nb.toString(16).padStart(2, "0")}`.toUpperCase();
-}
-
-function interpolateQ3StateAtSampleTime(
-  samples: Q3LineSample[],
-  sampleTime: number,
-): { p: number; t: number } | null {
-  if (!samples || samples.length === 0) return null;
-  if (samples.length === 1) return { p: samples[0].p, t: samples[0].t };
-  if (sampleTime <= samples[0].t) return { p: samples[0].p, t: samples[0].t };
-  const last = samples[samples.length - 1];
-  if (sampleTime >= last.t) return { p: last.p, t: last.t };
-
-  for (let i = 1; i < samples.length; i++) {
-    const curr = samples[i];
-    if (sampleTime > curr.t) continue;
-    const prev = samples[i - 1];
-    const span = Math.max(curr.t - prev.t, 1e-6);
-    const ratio = (sampleTime - prev.t) / span;
-    return {
-      p: prev.p + (curr.p - prev.p) * ratio,
-      t: sampleTime,
-    };
-  }
-
-  return { p: last.p, t: last.t };
-}
-
-function mapReplayToSampleTime(samples: Q3LineSample[], lapTimeSeconds: number, replayTime: number): number | null {
-  if (!samples || samples.length === 0) return null;
-  const first = samples[0].t;
-  const last = samples[samples.length - 1].t;
-  const span = Math.max(last - first, 1e-6);
-  const lapSpan = Math.max(lapTimeSeconds, 1e-6);
-  const clampedReplay = Math.max(0, Math.min(lapTimeSeconds, replayTime));
-  const normalized = clampedReplay / lapSpan;
-  return first + normalized * span;
-}
-
-function mapSampleToReplayTime(samples: Q3LineSample[], lapTimeSeconds: number, sampleTime: number): number | null {
-  if (!samples || samples.length === 0) return null;
-  const first = samples[0].t;
-  const last = samples[samples.length - 1].t;
-  const span = Math.max(last - first, 1e-6);
-  const normalized = Math.max(0, Math.min(1, (sampleTime - first) / span));
-  return normalized * Math.max(lapTimeSeconds, 0);
-}
-
-function normalizeSampleProgress(samples: Q3LineSample[], progress: number): number {
-  if (!samples || samples.length === 0) return 0;
-  const first = samples[0].p;
-  const last = samples[samples.length - 1].p;
-  const span = Math.max(last - first, 1e-6);
-  return Math.max(0, Math.min(1, (progress - first) / span));
-}
-
-function denormalizeSampleProgress(samples: Q3LineSample[], normalizedProgress: number): number {
-  if (!samples || samples.length === 0) return 0;
-  const first = samples[0].p;
-  const last = samples[samples.length - 1].p;
-  const span = Math.max(last - first, 1e-6);
-  const clamped = Math.max(0, Math.min(1, normalizedProgress));
-  return first + clamped * span;
-}
-
-function timeAtProgress(samples: Q3LineSample[], targetProgress: number, lapTimeSeconds: number): number | null {
-  if (!samples || samples.length === 0) return null;
-  if (samples.length === 1) return mapSampleToReplayTime(samples, lapTimeSeconds, samples[0].t);
-
-  const rawTargetProgress = denormalizeSampleProgress(samples, targetProgress);
-  if (rawTargetProgress <= samples[0].p) return mapSampleToReplayTime(samples, lapTimeSeconds, samples[0].t);
-  const last = samples[samples.length - 1];
-  if (rawTargetProgress >= last.p) return mapSampleToReplayTime(samples, lapTimeSeconds, last.t);
-
-  for (let i = 1; i < samples.length; i++) {
-    const curr = samples[i];
-    if (rawTargetProgress > curr.p) continue;
-    const prev = samples[i - 1];
-    const span = Math.max(curr.p - prev.p, 1e-6);
-    const ratio = (rawTargetProgress - prev.p) / span;
-    const sampleTime = prev.t + (curr.t - prev.t) * ratio;
-    return mapSampleToReplayTime(samples, lapTimeSeconds, sampleTime);
-  }
-
-  return mapSampleToReplayTime(samples, lapTimeSeconds, last.t);
-}
-
-function parseTimingValueToSeconds(raw: string | null | undefined): number | null {
-  const value = (raw || "").trim();
-  if (!value) return null;
-  const parts = value.split(":");
-  if (parts.length === 1) {
-    const sec = Number.parseFloat(parts[0]);
-    return Number.isFinite(sec) && sec >= 0 ? sec : null;
-  }
-  if (parts.length === 2) {
-    const mins = Number.parseInt(parts[0], 10);
-    const sec = Number.parseFloat(parts[1]);
-    if (!Number.isFinite(mins) || !Number.isFinite(sec) || mins < 0 || sec < 0) return null;
-    return mins * 60 + sec;
-  }
-  return null;
-}
-
-function rotateQ3SamplesToAnchor(samples: Q3LineSample[], anchor: { x: number; y: number } | null): Q3LineSample[] {
-  if (!samples || samples.length === 0) return [];
-  if (!anchor || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y)) return [...samples];
-
-  let bestIdx = 0;
-  let bestDist = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < samples.length; i++) {
-    const dx = samples[i].x - anchor.x;
-    const dy = samples[i].y - anchor.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist < bestDist) {
-      bestDist = dist;
-      bestIdx = i;
-    }
-  }
-  if (bestIdx === 0) return [...samples];
-  return [...samples.slice(bestIdx), ...samples.slice(0, bestIdx)];
-}
-
-function normalizeQ3SamplesForPlayback(
-  samples: Q3LineSample[],
-  lapTimeSeconds: number,
-  anchor: { x: number; y: number } | null = null,
-): Q3LineSample[] {
-  if (!samples || samples.length === 0 || !Number.isFinite(lapTimeSeconds) || lapTimeSeconds <= 0) return samples || [];
-  const ordered = rotateQ3SamplesToAnchor(samples, anchor);
-  if (ordered.length === 1) {
-    return [{ ...ordered[0], p: 0, t: 0 }];
-  }
-
-  const cumulative: number[] = new Array(ordered.length).fill(0);
-  let totalDist = 0;
-  for (let i = 1; i < ordered.length; i++) {
-    const dx = ordered[i].x - ordered[i - 1].x;
-    const dy = ordered[i].y - ordered[i - 1].y;
-    totalDist += Math.hypot(dx, dy);
-    cumulative[i] = totalDist;
-  }
-  const fallbackDen = Math.max(ordered.length - 1, 1);
-  let prevT = 0;
-  return ordered.map((sample, idx) => {
-    const rawProgress = totalDist > 1e-6 ? cumulative[idx] / totalDist : idx / fallbackDen;
-    const p = Math.max(0, Math.min(1, rawProgress));
-    let t = p * lapTimeSeconds;
-    if (idx > 0 && t < prevT) {
-      t = prevT;
-    }
-    prevT = t;
-    return { ...sample, p, t };
-  });
-}
-
-interface Q3SectorCell {
-  raw: string;
-  seconds: number | null;
-  split: number | null;
-  revealed: boolean;
-  tone: "purple" | "green" | "yellow" | null;
-}
-
-interface Q3SectorRow {
-  s1: Q3SectorCell;
-  s2: Q3SectorCell;
-  s3: Q3SectorCell;
 }
 
 function Q3LegendCar({ color, outlined = false }: { color: string; outlined?: boolean }) {
@@ -635,40 +417,10 @@ export default function ReplayPage() {
     });
   }, [isQualifyingSession, q3LinesResponse]);
 
-  const q3CompareLines = useMemo<Q3CompareLine[]>(() => {
-    if (!q3CompareMode || !isQualifyingSession) return [];
-    const [a, b] = q3SelectedDrivers;
-    if (!a || !b || a === b) return [];
-    const d1 = q3DriverMap.get(a);
-    const d2 = q3DriverMap.get(b);
-    if (!d1 || !d2) return [];
-    const c1 = normalizeHexColor(d1.color);
-    const c2 = normalizeHexColor(d2.color);
-    const sameColor = c1 === c2;
-    const c2Adjusted = sameColor ? shiftHexColor(c2, 70) : c2;
-    const trackAnchor =
-      trackData?.track_points && trackData.track_points.length > 0
-        ? { x: trackData.track_points[0].x, y: trackData.track_points[0].y }
-        : null;
-    const d1Samples = normalizeQ3SamplesForPlayback(d1.samples || [], d1.lap_time_seconds, trackAnchor);
-    const d2Samples = normalizeQ3SamplesForPlayback(d2.samples || [], d2.lap_time_seconds, trackAnchor);
-    return [
-      {
-        abbr: d1.abbr,
-        color: c1,
-        lapTimeSeconds: d1.lap_time_seconds,
-        samples: d1Samples,
-      },
-      {
-        abbr: d2.abbr,
-        color: c2Adjusted,
-        lapTimeSeconds: d2.lap_time_seconds,
-        samples: d2Samples,
-        lineDash: sameColor ? [8, 6] : undefined,
-        markerStyle: sameColor ? "outlined" : "solid",
-      },
-    ];
-  }, [isQualifyingSession, q3CompareMode, q3SelectedDrivers, q3DriverMap, trackData]);
+  const q3CompareLines = useMemo<Q3CompareLine[]>(
+    () => buildQ3CompareLines(q3CompareMode && isQualifyingSession, q3SelectedDrivers, q3DriverMap),
+    [isQualifyingSession, q3CompareMode, q3SelectedDrivers, q3DriverMap],
+  );
 
   const q3CompareActive = q3CompareMode && q3CompareLines.length === 2;
   const q3ComputedTotalTime = useMemo(() => {
@@ -683,122 +435,25 @@ export default function ReplayPage() {
   const q3LastTickRef = useRef<number | null>(null);
   const q3EffectiveTotalTime = q3TotalTime > 0 ? q3TotalTime : q3ComputedTotalTime;
 
-  const q3PlaybackSnapshot = useMemo(() => {
-    if (q3CompareLines.length !== 2) return null;
-    const a = q3CompareLines[0];
-    const b = q3CompareLines[1];
+  const q3LiveDelta = useMemo(
+    () => computeQ3LiveDelta(q3CompareLines, q3PlaybackTime),
+    [q3CompareLines, q3PlaybackTime],
+  );
 
-    const aNow = Math.min(q3PlaybackTime, a.lapTimeSeconds);
-    const bNow = Math.min(q3PlaybackTime, b.lapTimeSeconds);
-    const aSampleTime = mapReplayToSampleTime(a.samples, a.lapTimeSeconds, aNow);
-    const bSampleTime = mapReplayToSampleTime(b.samples, b.lapTimeSeconds, bNow);
-    if (aSampleTime == null || bSampleTime == null) return null;
-    const aState = interpolateQ3StateAtSampleTime(a.samples, aSampleTime);
-    const bState = interpolateQ3StateAtSampleTime(b.samples, bSampleTime);
-    if (!aState || !bState) return null;
+  const q3SectorReveal = useMemo(
+    () => buildQ3SectorReveal(q3CompareLines, q3DriverMap, q3PlaybackTime),
+    [q3CompareLines, q3DriverMap, q3PlaybackTime],
+  );
 
-    const aProgress = normalizeSampleProgress(a.samples, aState.p);
-    const bProgress = normalizeSampleProgress(b.samples, bState.p);
-    const compareProgress = Math.min(aProgress, bProgress);
-    const aAtCompare = timeAtProgress(a.samples, compareProgress, a.lapTimeSeconds);
-    const bAtCompare = timeAtProgress(b.samples, compareProgress, b.lapTimeSeconds);
+  const q3SectorDelta = useMemo(
+    () => computeQ3SectorDelta(q3CompareLines, q3SectorReveal),
+    [q3CompareLines, q3SectorReveal],
+  );
 
-    // Signed as Driver1 - Driver2 (negative means Driver1 is faster).
-    const signedDelta = (aAtCompare ?? aNow) - (bAtCompare ?? bNow);
-    return {
-      deltaSeconds: signedDelta,
-    };
-  }, [q3CompareLines, q3PlaybackTime]);
-
-  const q3LiveDelta = useMemo(() => {
-    if (!q3PlaybackSnapshot || q3CompareLines.length !== 2) return null;
-    const signed = q3PlaybackSnapshot.deltaSeconds;
-    const leader =
-      Math.abs(signed) < 5e-4
-        ? "LEVEL"
-        : signed < 0
-        ? `${q3CompareLines[0].abbr} ahead`
-        : `${q3CompareLines[1].abbr} ahead`;
-    return {
-      deltaSeconds: signed,
-      text: `${signed >= 0 ? "+" : ""}${signed.toFixed(3)}s • ${leader}`,
-    };
-  }, [q3PlaybackSnapshot, q3CompareLines]);
-
-  const q3SectorReveal = useMemo(() => {
-    const reveal = new Map<string, Q3SectorRow>();
-    for (const line of q3CompareLines) {
-      const meta = q3DriverMap.get(line.abbr);
-      if (!meta) continue;
-      const s1Raw = (meta.sector1 || "").trim();
-      const s2Raw = (meta.sector2 || "").trim();
-      const s3Raw = (meta.sector3 || "").trim();
-      const s1 = parseTimingValueToSeconds(s1Raw);
-      const s2 = parseTimingValueToSeconds(s2Raw);
-      const s3 = parseTimingValueToSeconds(s3Raw);
-      const split1 = s1;
-      const split2 = s1 != null && s2 != null ? s1 + s2 : null;
-      const split3 = s1 != null && s2 != null && s3 != null ? s1 + s2 + s3 : null;
-      const elapsed = Math.min(q3PlaybackTime, line.lapTimeSeconds);
-
-      const colors = meta.sector_colors || {};
-      const buildCell = (
-        raw: string,
-        seconds: number | null,
-        split: number | null,
-        tone: "purple" | "green" | "yellow" | null,
-      ): Q3SectorCell => {
-        const revealed = split != null && elapsed + 1e-3 >= split;
-        return {
-          raw,
-          seconds,
-          split,
-          revealed,
-          tone,
-        };
-      };
-
-      reveal.set(line.abbr, {
-        s1: buildCell(s1Raw, s1, split1, colors.s1 || null),
-        s2: buildCell(s2Raw, s2, split2, colors.s2 || null),
-        s3: buildCell(s3Raw, s3, split3, colors.s3 || null),
-      });
-    }
-    return reveal;
-  }, [q3CompareLines, q3DriverMap, q3PlaybackTime]);
-
-  const q3SectorDelta = useMemo(() => {
-    if (q3CompareLines.length !== 2) return null;
-    const aRow = q3SectorReveal.get(q3CompareLines[0].abbr);
-    const bRow = q3SectorReveal.get(q3CompareLines[1].abbr);
-    if (!aRow || !bRow) return null;
-
-    const compareSector = (aCell: Q3SectorCell, bCell: Q3SectorCell) => {
-      if (!aCell.revealed || !bCell.revealed || aCell.seconds == null || bCell.seconds == null) {
-        return { ready: false, text: "…", signed: null as number | null };
-      }
-      const signed = aCell.seconds - bCell.seconds; // Driver1 - Driver2
-      if (Math.abs(signed) < 5e-4) {
-        return { ready: true, text: "0.000", signed: 0 };
-      }
-      return { ready: true, text: `${signed >= 0 ? "+" : ""}${signed.toFixed(3)}`, signed };
-    };
-
-    return {
-      s1: compareSector(aRow.s1, bRow.s1),
-      s2: compareSector(aRow.s2, bRow.s2),
-      s3: compareSector(aRow.s3, bRow.s3),
-    };
-  }, [q3CompareLines, q3SectorReveal]);
-
-  const q3LapDelta = useMemo(() => {
-    if (q3CompareLines.length !== 2) return null;
-    const signed = q3CompareLines[0].lapTimeSeconds - q3CompareLines[1].lapTimeSeconds;
-    return {
-      signed,
-      text: `${signed >= 0 ? "+" : ""}${signed.toFixed(3)}`,
-    };
-  }, [q3CompareLines]);
+  const q3LapDelta = useMemo(
+    () => computeQ3LapDelta(q3CompareLines),
+    [q3CompareLines],
+  );
 
   const q3PairSignature = useMemo(
     () => q3CompareLines.map((d) => `${d.abbr}:${d.lapTimeSeconds}`).join("|"),

@@ -57,6 +57,50 @@ func nearestPosSampleWithin(arr []posSample, t, maxDeltaSeconds float64) *posSam
 	return ps
 }
 
+func interpolatePosSampleAt(arr []posSample, t, maxDeltaSeconds float64) *posSample {
+	if len(arr) == 0 {
+		return nil
+	}
+	i := sort.Search(len(arr), func(i int) bool { return arr[i].T >= t })
+	if i == 0 {
+		first := arr[0]
+		if maxDeltaSeconds > 0 && math.Abs(first.T-t) > maxDeltaSeconds {
+			return nil
+		}
+		return &posSample{T: t, X: first.X, Y: first.Y}
+	}
+	if i >= len(arr) {
+		last := arr[len(arr)-1]
+		if maxDeltaSeconds > 0 && math.Abs(last.T-t) > maxDeltaSeconds {
+			return nil
+		}
+		return &posSample{T: t, X: last.X, Y: last.Y}
+	}
+
+	prev := arr[i-1]
+	next := arr[i]
+	if maxDeltaSeconds > 0 {
+		if (t-prev.T) > maxDeltaSeconds || (next.T-t) > maxDeltaSeconds {
+			return nil
+		}
+	}
+	dt := next.T - prev.T
+	if dt <= 1e-9 {
+		return &posSample{T: t, X: prev.X, Y: prev.Y}
+	}
+	ratio := (t - prev.T) / dt
+	if ratio < 0 {
+		ratio = 0
+	} else if ratio > 1 {
+		ratio = 1
+	}
+	return &posSample{
+		T: t,
+		X: prev.X + (next.X-prev.X)*ratio,
+		Y: prev.Y + (next.Y-prev.Y)*ratio,
+	}
+}
+
 func latestCarAt(arr []carSample, t float64) *carSample {
 	if len(arr) == 0 {
 		return nil
