@@ -152,6 +152,21 @@ git push origin v1.0.0
 
 After the workflow completes, users can pull `:latest` or pin `:v1.0.0`.
 
+### Tag Helper Script
+
+Use the helper script for normal tag push and optional forced tag override:
+
+```bash
+# create + push a new annotated tag from HEAD
+scripts/release-tag.sh v1.0.0
+
+# create + push tag from a specific commit
+scripts/release-tag.sh v1.0.0 <commit-sha>
+
+# override existing tag (local + remote) after a hotfix
+scripts/release-tag.sh --force -m "Re-release v1.0.0 with hotfix" v1.0.0
+```
+
 ## Runtime Configuration
 
 Common backend variables:
