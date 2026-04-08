@@ -10,15 +10,16 @@ import SessionBanner from "@/components/SessionBanner";
 import TrackCanvas from "@/components/TrackCanvas";
 import Leaderboard, { type LapEntry } from "@/components/Leaderboard";
 import PlaybackControls from "@/components/PlaybackControls";
-import TelemetryChart from "@/components/TelemetryChart";
+import TelemetryChart, { type TelemetryDriverSnapshot } from "@/components/TelemetryChart";
 import PiPWindow from "@/components/PiPWindow";
 import LapAnalysisPanel from "@/components/LapAnalysisPanel";
-import type { SectorOverlay, Q3CompareLine } from "@/lib/trackRenderer";
+import type { SectorOverlay, Q3CompareLine, Q3DominanceOverlay } from "@/lib/trackRenderer";
 import {
   type Q3LineDriver,
   type Q3LinesData,
   type Q3SectorCell,
   buildQ3CompareLines,
+  buildQ3DominanceOverlay,
   buildQ3SectorReveal,
   computeQ3LapDelta,
   computeQ3LiveDelta,
@@ -63,6 +64,54 @@ interface DownloadStatus {
   queue_position?: number;
   attempt?: number;
   max_attempts?: number;
+}
+
+interface CompareTelemetryLap {
+  speed: number[];
+  throttle: number[];
+  brake: number[];
+  gear: number[];
+  rpm: number[];
+  drs: number[];
+}
+
+function toNumberArray(input: unknown): number[] {
+  if (!Array.isArray(input)) return [];
+  const out: number[] = [];
+  for (const raw of input) {
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+      out.push(raw);
+      continue;
+    }
+    if (typeof raw === "string") {
+      const n = Number.parseFloat(raw);
+      if (Number.isFinite(n)) out.push(n);
+    }
+  }
+  return out;
+}
+
+function parseCompareTelemetryLap(raw: unknown): CompareTelemetryLap | null {
+  if (!raw || typeof raw !== "object") return null;
+  const src = raw as Record<string, unknown>;
+  const speed = toNumberArray(src.speed);
+  if (speed.length === 0) return null;
+  return {
+    speed,
+    throttle: toNumberArray(src.throttle),
+    brake: toNumberArray(src.brake),
+    gear: toNumberArray(src.gear),
+    rpm: toNumberArray(src.rpm),
+    drs: toNumberArray(src.drs),
+  };
+}
+
+function sampleAtProgress(arr: number[], progress: number): number | null {
+  if (!arr.length) return null;
+  const clamped = Math.max(0, Math.min(1, progress));
+  const idx = Math.min(arr.length - 1, Math.max(0, Math.floor(clamped * (arr.length - 1))));
+  const value = arr[idx];
+  return Number.isFinite(value) ? value : null;
 }
 
 function Q3LegendCar({ color, outlined = false }: { color: string; outlined?: boolean }) {
@@ -125,6 +174,8 @@ export default function ReplayPage() {
   const [rcPinned, setRcPinned] = useState(false);
   const [q3CompareMode, setQ3CompareMode] = useState(false);
   const [q3SelectedDrivers, setQ3SelectedDrivers] = useState<[string | null, string | null]>([null, null]);
+  const [q3CompareTelemetry, setQ3CompareTelemetry] = useState<Record<string, CompareTelemetryLap | null>>({});
+  const [q3DominanceEnabled, setQ3DominanceEnabled] = useState(false);
 
   // Persist panel layout per session type
   const layoutCategory = sessionType === "R" || sessionType === "S" ? "race"
@@ -349,6 +400,7 @@ export default function ReplayPage() {
   }, [lapsResponse]);
 
   const replay = useReplaySocket(year, round, sessionType, downloaded);
+  const drivers = replay.frame?.drivers || [];
 
   // RC sound notification
   const lastRcCountRef = useRef(0);
@@ -377,7 +429,7 @@ export default function ReplayPage() {
       setTelemetryHeight(telemetryPanelRef.current.offsetHeight);
       setTelemetryWidth(telemetryPanelRef.current.offsetWidth);
     }
-  }, [selectedDrivers.length, showTelemetry, effectiveTelemetryPosition]);
+  }, [selectedDrivers.length, q3CompareMode, q3SelectedDrivers, showTelemetry, effectiveTelemetryPosition]);
 
   const isRace = sessionType === "R" || sessionType === "S";
   const isQualifyingSession = sessionType === "Q" || sessionType === "SQ";
@@ -423,6 +475,17 @@ export default function ReplayPage() {
   );
 
   const q3CompareActive = q3CompareMode && q3CompareLines.length === 2;
+  const q3DominanceOverlay = useMemo<Q3DominanceOverlay | null>(
+    () => buildQ3DominanceOverlay(q3CompareActive && q3DominanceEnabled, q3CompareLines, { speedByDriver: q3CompareTelemetry }),
+    [q3CompareActive, q3DominanceEnabled, q3CompareLines, q3CompareTelemetry],
+  );
+  const q3DominanceSummaryText = useMemo(() => {
+    const summary = q3DominanceOverlay?.summary;
+    if (!summary || summary.total <= 0) return null;
+    const pct = (count: number) => `${((count / summary.total) * 100).toFixed(0)}%`;
+    return `${summary.aAbbr} ${pct(summary.aWins)} • ${summary.bAbbr} ${pct(summary.bWins)} • Tie ${pct(summary.ties)}`;
+  }, [q3DominanceOverlay]);
+
   const q3ComputedTotalTime = useMemo(() => {
     if (!q3CompareActive) return 0;
     return Math.max(q3CompareLines[0].lapTimeSeconds, q3CompareLines[1].lapTimeSeconds, 0);
@@ -459,6 +522,105 @@ export default function ReplayPage() {
     () => q3CompareLines.map((d) => `${d.abbr}:${d.lapTimeSeconds}`).join("|"),
     [q3CompareLines],
   );
+
+  useEffect(() => {
+    if (!q3CompareActive || q3CompareLines.length !== 2) {
+      setQ3CompareTelemetry({});
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      const entries = await Promise.all(q3CompareLines.map(async (line): Promise<[string, CompareTelemetryLap | null]> => {
+        const meta = q3DriverMap.get(line.abbr);
+        const lap = meta?.lap_number ?? 0;
+        if (lap <= 0) return [line.abbr, null];
+        try {
+          const query = new URLSearchParams({
+            type: sessionType,
+            driver: line.abbr,
+            lap: String(lap),
+          });
+          const payload = await apiFetch<unknown>(`/api/sessions/${year}/${round}/telemetry?${query.toString()}`);
+          return [line.abbr, parseCompareTelemetryLap(payload)];
+        } catch {
+          return [line.abbr, null];
+        }
+      }));
+
+      if (cancelled) return;
+      const next: Record<string, CompareTelemetryLap | null> = {};
+      for (const [abbr, payload] of entries) next[abbr] = payload;
+      setQ3CompareTelemetry(next);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [q3CompareActive, q3CompareLines, q3DriverMap, year, round, sessionType]);
+
+  const telemetryDriverAbbrs = useMemo(
+    () => (q3CompareActive ? q3CompareLines.map((line) => line.abbr) : selectedDrivers),
+    [q3CompareActive, q3CompareLines, selectedDrivers],
+  );
+
+  const q3TelemetrySnapshots = useMemo(() => {
+    const out = new Map<string, TelemetryDriverSnapshot>();
+    if (!q3CompareActive) return out;
+
+    for (const line of q3CompareLines) {
+      const abbr = line.abbr;
+      const replayDriver = drivers.find((d) => d.abbr === abbr) || null;
+      const telemetryLap = q3CompareTelemetry[abbr] || null;
+      const progress = line.lapTimeSeconds > 0
+        ? Math.max(0, Math.min(1, q3PlaybackTime / line.lapTimeSeconds))
+        : 0;
+
+      const speed = telemetryLap ? sampleAtProgress(telemetryLap.speed, progress) : null;
+      const throttle = telemetryLap ? sampleAtProgress(telemetryLap.throttle, progress) : null;
+      const brake = telemetryLap ? sampleAtProgress(telemetryLap.brake, progress) : null;
+      const gear = telemetryLap ? sampleAtProgress(telemetryLap.gear, progress) : null;
+      const rpm = telemetryLap ? sampleAtProgress(telemetryLap.rpm, progress) : null;
+      const drs = telemetryLap ? sampleAtProgress(telemetryLap.drs, progress) : null;
+
+      let sectors = replayDriver?.sectors || null;
+      const sectorColors = q3DriverMap.get(abbr)?.sector_colors;
+      if (sectorColors) {
+        const q3Sectors: { num: number; color: "purple" | "green" | "yellow" }[] = [];
+        if (sectorColors.s1) q3Sectors.push({ num: 1, color: sectorColors.s1 });
+        if (sectorColors.s2) q3Sectors.push({ num: 2, color: sectorColors.s2 });
+        if (sectorColors.s3) q3Sectors.push({ num: 3, color: sectorColors.s3 });
+        if (q3Sectors.length > 0) sectors = q3Sectors;
+      }
+
+      out.set(abbr, {
+        abbr,
+        color: replayDriver?.color || line.color,
+        speed: speed ?? replayDriver?.speed ?? null,
+        throttle: throttle ?? replayDriver?.throttle ?? null,
+        brake: brake ?? (replayDriver?.brake ? 100 : 0),
+        gear: gear != null ? Math.round(gear) : replayDriver?.gear ?? null,
+        rpm: rpm ?? replayDriver?.rpm ?? null,
+        drs: drs ?? replayDriver?.drs ?? null,
+        sectors,
+      });
+    }
+
+    return out;
+  }, [q3CompareActive, q3CompareLines, drivers, q3CompareTelemetry, q3DriverMap, q3PlaybackTime]);
+
+  const telemetryDrivers = useMemo<(TelemetryDriverSnapshot | null)[]>(
+    () => telemetryDriverAbbrs.map((abbr) => {
+      if (q3CompareActive) {
+        return q3TelemetrySnapshots.get(abbr) || drivers.find((d) => d.abbr === abbr) || null;
+      }
+      return drivers.find((d) => d.abbr === abbr) || null;
+    }),
+    [telemetryDriverAbbrs, q3CompareActive, q3TelemetrySnapshots, drivers],
+  );
+
+  const telemetryDriverCount = telemetryDriverAbbrs.length;
 
   useEffect(() => {
     if (!q3CompareMode) {
@@ -670,7 +832,6 @@ export default function ReplayPage() {
 
   const trackPoints = trackData?.track_points || [];
   const rotation = trackData?.rotation || 0;
-  const drivers = replay.frame?.drivers || [];
   const trackStatus = replay.frame?.status || "green";
   const redFlagEnd = replay.frame?.red_flag_end ?? null;
   const redFlagCountdown = redFlagEnd !== null && replay.frame
@@ -799,7 +960,7 @@ export default function ReplayPage() {
         </div>
 
         {/* Track section */}
-        <div className={`sm:flex-1 min-w-0 ${!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels || rcPinned) ? `flex ${effectiveTelemetryPosition === "left" ? "flex-row" : "flex-col"} min-h-0` : "relative"}`}>
+        <div className={`sm:flex-1 min-w-0 ${!isMobile && showTelemetry && (telemetryDriverCount > 2 || settings.showAllPanels || rcPinned) ? `flex ${effectiveTelemetryPosition === "left" ? "flex-row" : "flex-col"} min-h-0` : "relative"}`}>
           {/* Mobile section header */}
           {isMobile && (
             <button
@@ -814,7 +975,7 @@ export default function ReplayPage() {
           )}
 
           {(!isMobile || mobileTrackOpen) && (
-            <div className={`h-[42vh] sm:h-full relative ${!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels || rcPinned) ? "flex-1 min-w-0 min-h-0" : ""}`}>
+            <div className={`h-[42vh] sm:h-full relative ${!isMobile && showTelemetry && (telemetryDriverCount > 2 || settings.showAllPanels || rcPinned) ? "flex-1 min-w-0 min-h-0" : ""}`}>
               {/* Flag badge */}
               {trackStatus !== "green" && (
                 <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
@@ -972,6 +1133,8 @@ export default function ReplayPage() {
                 sectorFlags={replay.frame?.sector_flags}
                 q3CompareLines={compareActive ? q3CompareLines : null}
                 q3CompareElapsedSeconds={compareActive ? q3PlaybackTime : 0}
+                q3DominanceOverlay={compareActive ? q3DominanceOverlay : null}
+                q3HideCompareOverlay={q3DominanceEnabled}
               />
 
               {isQualifyingSession && (q3LinesResponse?.drivers?.length || 0) > 0 && (
@@ -1028,6 +1191,25 @@ export default function ReplayPage() {
                             </option>
                           ))}
                         </select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setQ3DominanceEnabled((v) => !v)}
+                          disabled={q3CompareLines.length !== 2}
+                          className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wide border transition-colors ${
+                            q3DominanceEnabled
+                              ? "bg-blue-500/20 border-blue-500/50 text-blue-200"
+                              : "bg-f1-dark border-f1-border text-f1-muted hover:text-white"
+                          } disabled:opacity-50 disabled:cursor-not-allowed`}
+                        >
+                          Track Dominance
+                        </button>
+                        {q3DominanceEnabled && q3DominanceSummaryText && (
+                          <span className="text-[9px] text-f1-muted tabular-nums">{q3DominanceSummaryText}</span>
+                        )}
+                        {q3DominanceEnabled && !q3DominanceSummaryText && (
+                          <span className="text-[9px] text-f1-muted">Telemetry loading...</span>
+                        )}
                       </div>
                       {q3CompareLines.length === 2 && (
                         <div className="pt-1">
@@ -1227,7 +1409,7 @@ export default function ReplayPage() {
               {/* Fullscreen toggle moved to PlaybackControls */}
 
               {/* Telemetry overlay - desktop only, bottom-left (1-2 drivers) */}
-              {!isMobile && showTelemetry && selectedDrivers.length <= 2 && !settings.showAllPanels && !rcPinned && (
+              {!isMobile && showTelemetry && telemetryDriverCount <= 2 && !settings.showAllPanels && !rcPinned && (
                 <div className="absolute bottom-2 left-3 z-10 flex flex-col gap-1">
                   <button
                     onClick={() => setShowTelemetry(false)}
@@ -1235,11 +1417,10 @@ export default function ReplayPage() {
                   >
                     Hide Telemetry
                   </button>
-                  {selectedDrivers.length > 0 ? (
-                    selectedDrivers.map((abbr) => {
-                      const drv = drivers.find((d) => d.abbr === abbr) || null;
-                      return <TelemetryChart key={abbr} visible driver={drv} year={year} isQualifying={isQualifying} useImperial={settings.useImperial} />;
-                    })
+                  {telemetryDriverCount > 0 ? (
+                    telemetryDrivers.map((drv, idx) => (
+                      <TelemetryChart key={telemetryDriverAbbrs[idx] || `telemetry-${idx}`} visible driver={drv} year={year} isQualifying={isQualifying} useImperial={settings.useImperial} />
+                    ))
                   ) : (
                     <TelemetryChart visible driver={null} year={year} useImperial={settings.useImperial} />
                   )}
@@ -1276,7 +1457,7 @@ export default function ReplayPage() {
           )}
 
           {/* Telemetry panel - desktop only (3+ drivers) */}
-          {!isMobile && showTelemetry && (selectedDrivers.length > 2 || settings.showAllPanels || rcPinned) && (
+          {!isMobile && showTelemetry && (telemetryDriverCount > 2 || settings.showAllPanels || rcPinned) && (
             <div
               className={`flex-shrink-0 ${
                 effectiveTelemetryPosition === "left"
@@ -1307,11 +1488,10 @@ export default function ReplayPage() {
                   </button>
                 </div>
                 <div className="flex flex-col gap-1">
-                  {selectedDrivers.length > 0 ? (
-                    selectedDrivers.map((abbr) => {
-                      const drv = drivers.find((d) => d.abbr === abbr) || null;
-                      return <TelemetryChart key={abbr} visible driver={drv} year={year} isQualifying={isQualifying} useImperial={settings.useImperial} />;
-                    })
+                  {telemetryDriverCount > 0 ? (
+                    telemetryDrivers.map((drv, idx) => (
+                      <TelemetryChart key={telemetryDriverAbbrs[idx] || `telemetry-panel-${idx}`} visible driver={drv} year={year} isQualifying={isQualifying} useImperial={settings.useImperial} />
+                    ))
                   ) : (
                     <p className="text-[10px] text-f1-muted py-2">Select drivers on the leaderboard to view telemetry</p>
                   )}
@@ -1395,11 +1575,10 @@ export default function ReplayPage() {
           </button>
           {mobileTelemetryOpen && (
             <div className="bg-f1-card px-3 py-2 space-y-1">
-              {selectedDrivers.length > 0 ? (
-                selectedDrivers.map((abbr) => {
-                  const drv = drivers.find((d) => d.abbr === abbr) || null;
-                  return <TelemetryChart key={abbr} visible driver={drv} year={year} isQualifying={isQualifying} useImperial={settings.useImperial} />;
-                })
+              {telemetryDriverCount > 0 ? (
+                telemetryDrivers.map((drv, idx) => (
+                  <TelemetryChart key={telemetryDriverAbbrs[idx] || `telemetry-mobile-${idx}`} visible driver={drv} year={year} isQualifying={isQualifying} useImperial={settings.useImperial} />
+                ))
               ) : (
                 <TelemetryChart visible driver={null} year={year} useImperial={settings.useImperial} />
               )}
@@ -1562,6 +1741,8 @@ export default function ReplayPage() {
                     sectorFlags={replay.frame?.sector_flags}
                     q3CompareLines={compareActive ? q3CompareLines : null}
                     q3CompareElapsedSeconds={compareActive ? q3PlaybackTime : 0}
+                    q3DominanceOverlay={compareActive ? q3DominanceOverlay : null}
+                    q3HideCompareOverlay={q3DominanceEnabled}
                   />
                 </div>
               )}
@@ -1614,11 +1795,10 @@ export default function ReplayPage() {
               </button>
               {pipTelemetryOpen && (
                 <div className="bg-f1-card px-3 py-2 space-y-1">
-                  {selectedDrivers.length > 0 ? (
-                    selectedDrivers.map((abbr) => {
-                      const drv = drivers.find((d) => d.abbr === abbr) || null;
-                      return <TelemetryChart key={abbr} visible driver={drv} year={year} isQualifying={isQualifying} useImperial={settings.useImperial} />;
-                    })
+                  {telemetryDriverCount > 0 ? (
+                    telemetryDrivers.map((drv, idx) => (
+                      <TelemetryChart key={telemetryDriverAbbrs[idx] || `telemetry-pip-${idx}`} visible driver={drv} year={year} isQualifying={isQualifying} useImperial={settings.useImperial} />
+                    ))
                   ) : (
                     <TelemetryChart visible driver={null} year={year} useImperial={settings.useImperial} />
                   )}

@@ -12,6 +12,7 @@ import {
   MarshalSector,
   SectorFlag,
   Q3CompareLine,
+  Q3DominanceOverlay,
 } from "@/lib/trackRenderer";
 
 interface Props {
@@ -28,6 +29,8 @@ interface Props {
   sectorFlags?: SectorFlag[] | null;
   q3CompareLines?: Q3CompareLine[] | null;
   q3CompareElapsedSeconds?: number | null;
+  q3DominanceOverlay?: Q3DominanceOverlay | null;
+  q3HideCompareOverlay?: boolean;
 }
 
 // Longer than the 500ms frame interval so the dot is always still moving
@@ -48,7 +51,7 @@ function getCanvasWindow(canvas: HTMLCanvasElement | null): Window {
 }
 
 
-export default function TrackCanvas({ trackPoints, rotation, trackStatus = "green", drivers, highlightedDrivers, playbackSpeed = 1, showDriverNames = true, sectorOverlay = null, corners = null, marshalSectors = null, sectorFlags = null, q3CompareLines = null, q3CompareElapsedSeconds = 0 }: Props) {
+export default function TrackCanvas({ trackPoints, rotation, trackStatus = "green", drivers, highlightedDrivers, playbackSpeed = 1, showDriverNames = true, sectorOverlay = null, corners = null, marshalSectors = null, sectorFlags = null, q3CompareLines = null, q3CompareElapsedSeconds = 0, q3DominanceOverlay = null, q3HideCompareOverlay = false }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const sizeRef = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -73,6 +76,10 @@ export default function TrackCanvas({ trackPoints, rotation, trackStatus = "gree
   q3CompareLinesRef.current = q3CompareLines;
   const q3CompareElapsedRef = useRef(q3CompareElapsedSeconds);
   q3CompareElapsedRef.current = q3CompareElapsedSeconds;
+  const q3DominanceOverlayRef = useRef(q3DominanceOverlay);
+  q3DominanceOverlayRef.current = q3DominanceOverlay;
+  const q3HideCompareOverlayRef = useRef(q3HideCompareOverlay);
+  q3HideCompareOverlayRef.current = q3HideCompareOverlay;
 
   // Update targets when drivers prop changes
   useEffect(() => {
@@ -141,12 +148,24 @@ export default function TrackCanvas({ trackPoints, rotation, trackStatus = "gree
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
 
-      drawTrack(ctx, trackPoints, w, h, rotation, trackStatusRef.current, sectorOverlayRef.current, cornersRef.current, marshalSectorsRef.current, sectorFlagsRef.current);
+      drawTrack(
+        ctx,
+        trackPoints,
+        w,
+        h,
+        rotation,
+        trackStatusRef.current,
+        sectorOverlayRef.current,
+        q3DominanceOverlayRef.current,
+        cornersRef.current,
+        marshalSectorsRef.current,
+        sectorFlagsRef.current,
+      );
 
       const now = performance.now();
       const compareLines = q3CompareLinesRef.current || [];
       const compareActive = compareLines.length === 2;
-      if (compareActive) {
+      if (compareActive && !q3HideCompareOverlayRef.current) {
         const elapsed = Math.max(0, q3CompareElapsedRef.current || 0);
         drawQ3CompareOverlay(ctx, compareLines, elapsed, w, h, rotation);
       } else {

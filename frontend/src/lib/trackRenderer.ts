@@ -52,6 +52,25 @@ export interface Q3CompareLine {
   markerStyle?: "solid" | "outlined";
 }
 
+export interface Q3DominanceSegment {
+  startProgress: number;
+  endProgress: number;
+  winner: "a" | "b" | "tie";
+  color: string;
+}
+
+export interface Q3DominanceOverlay {
+  segments: Q3DominanceSegment[];
+  summary: {
+    aAbbr: string;
+    bAbbr: string;
+    aWins: number;
+    bWins: number;
+    ties: number;
+    total: number;
+  };
+}
+
 const TRACK_STATUS_COLORS: Record<string, string> = {
   green: "#3A3A4A",
   yellow: "#F5C518",
@@ -68,6 +87,7 @@ export function drawTrack(
   rotation: number,
   trackStatus: string = "green",
   sectorOverlay?: SectorOverlay | null,
+  q3DominanceOverlay?: Q3DominanceOverlay | null,
   corners?: Corner[] | null,
   marshalSectors?: MarshalSector[] | null,
   sectorFlags?: SectorFlag[] | null,
@@ -122,7 +142,78 @@ export function drawTrack(
   }
 
   // Draw track outline (optionally colored by sector)
-  if (sectorOverlay) {
+  if (q3DominanceOverlay && q3DominanceOverlay.segments.length > 0) {
+    const cumulative: number[] = new Array(rotated.length).fill(0);
+    let totalDist = 0;
+    for (let i = 1; i < rotated.length; i++) {
+      totalDist += Math.hypot(rotated[i].x - rotated[i - 1].x, rotated[i].y - rotated[i - 1].y);
+      cumulative[i] = totalDist;
+    }
+
+    const pointAtProgress = (progress: number): { point: TrackPoint; idx: number } => {
+      const clampedProgress = Math.max(0, Math.min(1, progress));
+      if (rotated.length <= 1 || totalDist <= 1e-9) {
+        return { point: rotated[0], idx: 0 };
+      }
+      const targetDist = clampedProgress * totalDist;
+      let high = cumulative.findIndex((d) => d >= targetDist);
+      if (high < 0) high = cumulative.length - 1;
+      if (high <= 0) return { point: rotated[0], idx: 0 };
+
+      const low = high - 1;
+      const segDist = Math.max(cumulative[high] - cumulative[low], 1e-9);
+      const ratio = (targetDist - cumulative[low]) / segDist;
+      return {
+        idx: high,
+        point: {
+          x: rotated[low].x + (rotated[high].x - rotated[low].x) * ratio,
+          y: rotated[low].y + (rotated[high].y - rotated[low].y) * ratio,
+        },
+      };
+    };
+
+    const drawDominanceSegment = (startProgress: number, endProgress: number, color: string) => {
+      const clampedStart = Math.max(0, Math.min(1, startProgress));
+      const clampedEnd = Math.max(0, Math.min(1, endProgress));
+      if (clampedEnd <= clampedStart + 1e-6) return;
+
+      const start = pointAtProgress(clampedStart);
+      const end = pointAtProgress(clampedEnd);
+
+      ctx.beginPath();
+      const [sx2, sy2] = toScreen(start.point);
+      ctx.moveTo(sx2, sy2);
+      for (let i = Math.max(start.idx, 1); i <= end.idx && i < rotated.length; i++) {
+        const [px, py] = toScreen(rotated[i]);
+        ctx.lineTo(px, py);
+      }
+      const [ex, ey] = toScreen(end.point);
+      ctx.lineTo(ex, ey);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 11;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.stroke();
+    };
+
+    ctx.beginPath();
+    ctx.strokeStyle = "#3A3A4A";
+    ctx.lineWidth = 12;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    const [bx, by] = toScreen(rotated[0]);
+    ctx.moveTo(bx, by);
+    for (let i = 1; i < rotated.length; i++) {
+      const [px, py] = toScreen(rotated[i]);
+      ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.stroke();
+
+    for (const seg of q3DominanceOverlay.segments) {
+      drawDominanceSegment(seg.startProgress, seg.endProgress, seg.color);
+    }
+  } else if (sectorOverlay) {
     const { boundaries, colors } = sectorOverlay;
     const segments = [
       { start: 0, end: boundaries.s1_end, color: colors.s1 },

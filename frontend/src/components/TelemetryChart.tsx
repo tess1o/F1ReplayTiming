@@ -1,13 +1,23 @@
 "use client";
 
-import { ReplayDriver } from "@/hooks/useReplaySocket";
-
 interface Props {
   visible: boolean;
-  driver: ReplayDriver | null;
+  driver: TelemetryDriverSnapshot | null;
   year?: number;
   isQualifying?: boolean;
   useImperial?: boolean;
+}
+
+export interface TelemetryDriverSnapshot {
+  abbr: string;
+  color: string;
+  speed: number | null;
+  throttle: number | null;
+  brake: boolean | number;
+  gear: number | null;
+  rpm: number | null;
+  drs: number | null;
+  sectors?: { num: number; color: "purple" | "green" | "yellow" }[] | null;
 }
 
 function BarPips({
@@ -65,7 +75,7 @@ export default function TelemetryChart({ visible, driver, year, isQualifying, us
   const speedKmh = Math.round(driver.speed ?? 0);
   const speed = useImperial ? Math.round(speedKmh * 0.6214) : speedKmh;
   const throttle = driver.throttle ?? 0;
-  const brake = driver.brake ? 100 : 0;
+  const brake = typeof driver.brake === "number" ? driver.brake : driver.brake ? 100 : 0;
   const gear = driver.gear ?? 0;
   const rpm = driver.rpm ?? 0;
   const drs = driver.drs ?? 0;

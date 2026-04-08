@@ -1,4 +1,4 @@
-import type { Q3CompareLine } from "@/lib/trackRenderer";
+import type { Q3CompareLine, Q3DominanceOverlay } from "@/lib/trackRenderer";
 
 export interface Q3LineSample {
   x: number;
@@ -70,6 +70,14 @@ export interface Q3LiveDelta {
   text: string;
 }
 
+export interface Q3DominanceBuildOptions {
+  microSectorCount?: number;
+  tieThresholdSeconds?: number;
+  speedTieThresholdKph?: number;
+  tieColor?: string;
+  speedByDriver?: Record<string, { speed?: number[] | null } | null | undefined> | null;
+}
+
 function normalizeHexColor(input: string): string {
   const raw = (input || "").trim();
   if (!raw) return "#FFFFFF";
@@ -84,17 +92,29 @@ function normalizeHexColor(input: string): string {
   return "#FFFFFF";
 }
 
-function shiftHexColor(input: string, shift: number): string {
+function hexToRgb(input: string): { r: number; g: number; b: number } {
   const hex = normalizeHexColor(input);
-  const parse = (start: number) => Number.parseInt(hex.slice(start, start + 2), 16);
-  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
-  const r = parse(1);
-  const g = parse(3);
-  const b = parse(5);
-  const nr = clamp(r + shift);
-  const ng = clamp(g + shift);
-  const nb = clamp(b + shift);
-  return `#${nr.toString(16).padStart(2, "0")}${ng.toString(16).padStart(2, "0")}${nb.toString(16).padStart(2, "0")}`.toUpperCase();
+  return {
+    r: Number.parseInt(hex.slice(1, 3), 16),
+    g: Number.parseInt(hex.slice(3, 5), 16),
+    b: Number.parseInt(hex.slice(5, 7), 16),
+  };
+}
+
+function pickHighContrastColor(base: string): string {
+  const candidates = ["#F59E0B", "#22D3EE", "#A3E635", "#F472B6", "#38BDF8"];
+  const a = hexToRgb(base);
+  let best = candidates[0];
+  let bestScore = -1;
+  for (const candidate of candidates) {
+    const b = hexToRgb(candidate);
+    const score = Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b);
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return best;
 }
 
 function parseTimingValueToSeconds(raw: string | null | undefined): number | null {
@@ -239,7 +259,7 @@ export function buildQ3CompareLines(
   const c1 = normalizeHexColor(d1.color);
   const c2 = normalizeHexColor(d2.color);
   const sameColor = c1 === c2;
-  const c2Adjusted = sameColor ? shiftHexColor(c2, 70) : c2;
+  const c2Adjusted = sameColor ? pickHighContrastColor(c2) : c2;
 
   return [
     {
@@ -257,6 +277,189 @@ export function buildQ3CompareLines(
       markerStyle: sameColor ? "outlined" : "solid",
     },
   ];
+}
+
+function clampMicroSectorCount(value: number | undefined): number {
+  if (!Number.isFinite(value)) return 300;
+  return Math.max(20, Math.min(2000, Math.floor(value || 300)));
+}
+
+export function buildQ3DominanceOverlay(
+  enabled: boolean,
+  lines: Q3CompareLine[],
+  options: Q3DominanceBuildOptions = {},
+): Q3DominanceOverlay | null {
+  if (!enabled || lines.length !== 2) return null;
+  const [d1, d2] = lines;
+  if (!d1.samples?.length || !d2.samples?.length || d1.lapTimeSeconds <= 0 || d2.lapTimeSeconds <= 0) {
+    return null;
+  }
+
+  const microSectorCount = clampMicroSectorCount(options.microSectorCount);
+  const tieThreshold = Number.isFinite(options.tieThresholdSeconds) ? Math.max(0, options.tieThresholdSeconds || 0) : 5e-4;
+  const tieColor = options.tieColor || "#9CA3AF";
+  const speedByDriver = options.speedByDriver || null;
+  const d1Speed = speedByDriver?.[d1.abbr]?.speed || null;
+  const d2Speed = speedByDriver?.[d2.abbr]?.speed || null;
+
+  const buildTelemetryProgressTimeProfile = (speed: number[] | null, lapTimeSeconds: number): Array<{ p: number; t: number; v: number }> | null => {
+    if (!speed || speed.length < 2 || !Number.isFinite(lapTimeSeconds) || lapTimeSeconds <= 0) return null;
+    const n = speed.length;
+    const dt = lapTimeSeconds / (n - 1);
+    if (!Number.isFinite(dt) || dt <= 0) return null;
+
+    const cumulativeDistance = new Array<number>(n).fill(0);
+    let totalDistance = 0;
+    const toMps = (vKmh: number) => (Number.isFinite(vKmh) ? Math.max(0, vKmh) / 3.6 : 0);
+
+    for (let i = 1; i < n; i++) {
+      const v0 = toMps(speed[i - 1]);
+      const v1 = toMps(speed[i]);
+      const stepDistance = ((v0 + v1) * 0.5) * dt;
+      totalDistance += stepDistance;
+      cumulativeDistance[i] = totalDistance;
+    }
+
+    if (!Number.isFinite(totalDistance) || totalDistance <= 1e-6) return null;
+
+    const profile: Array<{ p: number; t: number; v: number }> = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const v = Number.isFinite(speed[i]) ? Math.max(0, speed[i]) : 0;
+      profile[i] = {
+        p: Math.max(0, Math.min(1, cumulativeDistance[i] / totalDistance)),
+        t: i * dt,
+        v,
+      };
+    }
+    profile[0].p = 0;
+    profile[n - 1].p = 1;
+    return profile;
+  };
+
+  const timeAtTelemetryProgress = (
+    profile: Array<{ p: number; t: number; v: number }>,
+    targetProgress: number,
+  ): number | null => {
+    if (!profile.length) return null;
+    const target = Math.max(0, Math.min(1, targetProgress));
+    if (target <= profile[0].p) return profile[0].t;
+
+    const last = profile[profile.length - 1];
+    if (target >= last.p) return last.t;
+
+    for (let i = 1; i < profile.length; i++) {
+      const curr = profile[i];
+      if (target > curr.p) continue;
+      const prev = profile[i - 1];
+      const span = curr.p - prev.p;
+      if (span <= 1e-9) return curr.t;
+      const ratio = (target - prev.p) / span;
+      return prev.t + (curr.t - prev.t) * ratio;
+    }
+
+    return last.t;
+  };
+
+  const speedAtTelemetryProgress = (
+    profile: Array<{ p: number; t: number; v: number }>,
+    targetProgress: number,
+  ): number | null => {
+    if (!profile.length) return null;
+    const target = Math.max(0, Math.min(1, targetProgress));
+    if (target <= profile[0].p) return profile[0].v;
+
+    const last = profile[profile.length - 1];
+    if (target >= last.p) return last.v;
+
+    for (let i = 1; i < profile.length; i++) {
+      const curr = profile[i];
+      if (target > curr.p) continue;
+      const prev = profile[i - 1];
+      const span = curr.p - prev.p;
+      if (span <= 1e-9) return curr.v;
+      const ratio = (target - prev.p) / span;
+      return prev.v + (curr.v - prev.v) * ratio;
+    }
+
+    return last.v;
+  };
+
+  const d1Profile = buildTelemetryProgressTimeProfile(d1Speed, d1.lapTimeSeconds);
+  const d2Profile = buildTelemetryProgressTimeProfile(d2Speed, d2.lapTimeSeconds);
+  if (!d1Profile || !d2Profile) return null;
+  const speedTieThreshold = Number.isFinite(options.speedTieThresholdKph)
+    ? Math.max(0, options.speedTieThresholdKph || 0)
+    : 2.0;
+
+  const segments: Q3DominanceOverlay["segments"] = [];
+  let aWins = 0;
+  let bWins = 0;
+  let ties = 0;
+
+  for (let i = 0; i < microSectorCount; i++) {
+    const startProgress = i / microSectorCount;
+    const endProgress = (i + 1) / microSectorCount;
+
+    const d1Start = timeAtTelemetryProgress(d1Profile, startProgress);
+    const d1End = timeAtTelemetryProgress(d1Profile, endProgress);
+    const d2Start = timeAtTelemetryProgress(d2Profile, startProgress);
+    const d2End = timeAtTelemetryProgress(d2Profile, endProgress);
+    if (d1Start == null || d1End == null || d2Start == null || d2End == null) continue;
+
+    const dt1 = d1End - d1Start;
+    const dt2 = d2End - d2Start;
+    if (!Number.isFinite(dt1) || !Number.isFinite(dt2)) continue;
+
+    const centerProgress = (startProgress + endProgress) * 0.5;
+    const v1 = speedAtTelemetryProgress(d1Profile, centerProgress);
+    const v2 = speedAtTelemetryProgress(d2Profile, centerProgress);
+
+    let winner: "a" | "b" | "tie";
+    if (v1 != null && v2 != null && Number.isFinite(v1) && Number.isFinite(v2)) {
+      const dv = v1 - v2;
+      if (Math.abs(dv) <= speedTieThreshold) {
+        const delta = dt1 - dt2;
+        winner = Math.abs(delta) <= tieThreshold ? "tie" : delta < 0 ? "a" : "b";
+      } else {
+        winner = dv > 0 ? "a" : "b";
+      }
+    } else {
+      const delta = dt1 - dt2;
+      winner = Math.abs(delta) <= tieThreshold ? "tie" : delta < 0 ? "a" : "b";
+    }
+    const color = winner === "a" ? d1.color : winner === "b" ? d2.color : tieColor;
+
+    if (winner === "a") aWins++;
+    else if (winner === "b") bWins++;
+    else ties++;
+
+    const prev = segments[segments.length - 1];
+    if (prev && prev.winner === winner) {
+      prev.endProgress = endProgress;
+    } else {
+      segments.push({
+        startProgress,
+        endProgress,
+        winner,
+        color,
+      });
+    }
+  }
+
+  const total = aWins + bWins + ties;
+  if (segments.length === 0 || total === 0) return null;
+
+  return {
+    segments,
+    summary: {
+      aAbbr: d1.abbr,
+      bAbbr: d2.abbr,
+      aWins,
+      bWins,
+      ties,
+      total,
+    },
+  };
 }
 
 export function computeQ3LiveDelta(lines: Q3CompareLine[], playbackTime: number): Q3LiveDelta | null {
