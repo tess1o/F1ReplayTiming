@@ -333,6 +333,9 @@ export default function SessionPicker() {
                         {localTime.dayDate}<br />{localTime.time}
                       </span>
                     )}
+                    <span className="text-[10px] mb-1 font-bold invisible select-none" aria-hidden>
+                      {session.name}
+                    </span>
                     <a
                       href={`/replay/${year}/${evt.round_number}?type=${code}`}
                       onClick={(e) => {
@@ -355,6 +358,9 @@ export default function SessionPicker() {
                         {localTime.dayDate}<br />{localTime.time}
                       </span>
                     )}
+                    <span className="text-[10px] mb-1 font-bold invisible select-none" aria-hidden>
+                      {session.name}
+                    </span>
                     <a
                       href="/downloads"
                       onClick={(e) => e.stopPropagation()}

@@ -646,6 +646,258 @@ func TestTimelineLookups(t *testing.T) {
 	if tooFar != nil {
 		t.Fatalf("interpolatePosSampleAt expected nil when boundary gap exceeds limit")
 	}
+
+	car := []carSample{
+		{T: 1.0, Speed: 100, Throttle: 20, Brake: false, Gear: 3, RPM: 9000, DRS: 8},
+		{T: 3.0, Speed: 200, Throttle: 60, Brake: true, Gear: 6, RPM: 12000, DRS: 10},
+	}
+	carInterp := interpolateCarSampleAt(car, 2.0, 1.5)
+	if carInterp == nil {
+		t.Fatalf("interpolateCarSampleAt expected interpolated sample")
+	}
+	if math.Abs(carInterp.Speed-150) > 1e-9 || math.Abs(carInterp.Throttle-40) > 1e-9 || math.Abs(carInterp.RPM-10500) > 1e-9 {
+		t.Fatalf("unexpected interpolated numeric fields: %+v", carInterp)
+	}
+	// Discrete channels use the previous sample to avoid flicker.
+	if carInterp.Brake != false || carInterp.Gear != 3 || carInterp.DRS != 8 {
+		t.Fatalf("unexpected interpolated discrete fields: %+v", carInterp)
+	}
+	carTooFar := interpolateCarSampleAt(car, 2.0, 0.9)
+	if carTooFar != nil {
+		t.Fatalf("interpolateCarSampleAt expected nil when boundary gap exceeds limit")
+	}
+}
+
+func TestNewGoSessionProcessorReplayInterpMaxGapConfig(t *testing.T) {
+	t.Setenv("REPLAY_INTERP_MAX_GAP_SECONDS", "0.05")
+	p := NewGoSessionProcessor(t.TempDir(), nil, 256, 512)
+	if math.Abs(p.replayInterpMaxGap-0.1) > 1e-9 {
+		t.Fatalf("expected lower clamp 0.1, got %.3f", p.replayInterpMaxGap)
+	}
+
+	t.Setenv("REPLAY_INTERP_MAX_GAP_SECONDS", "5")
+	p = NewGoSessionProcessor(t.TempDir(), nil, 256, 512)
+	if math.Abs(p.replayInterpMaxGap-2.0) > 1e-9 {
+		t.Fatalf("expected upper clamp 2.0, got %.3f", p.replayInterpMaxGap)
+	}
+
+	t.Setenv("REPLAY_INTERP_MAX_GAP_SECONDS", "0.7")
+	p = NewGoSessionProcessor(t.TempDir(), nil, 256, 512)
+	if math.Abs(p.replayInterpMaxGap-0.7) > 1e-9 {
+		t.Fatalf("expected configured value 0.7, got %.3f", p.replayInterpMaxGap)
+	}
+}
+
+func TestWriteReplayFromTimelinesInterpolatesPositionAndCarData(t *testing.T) {
+	dir := t.TempDir()
+	st := newTestStore(t, dir)
+	defer st.Close()
+	ctx := context.Background()
+
+	sessionID, err := st.UpsertSessionInfo(ctx, 2026, 99, "R", map[string]any{
+		"event_name": "Test GP",
+		"circuit":    "Test Circuit",
+		"country":    "Test",
+		"drivers": []any{
+			map[string]any{
+				"abbreviation":  "AAA",
+				"driver_number": "1",
+				"full_name":     "Driver A",
+				"team_name":     "Team A",
+				"team_color":    "#FFFFFF",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert session info: %v", err)
+	}
+
+	p := &GoSessionProcessor{
+		store:              st,
+		sampleEvery:        0.5,
+		replayInterpMaxGap: 0.6,
+		replayChunkFrames:  16,
+		replayChunkCodec:   storage.CodecProtobuf,
+	}
+	drivers := []driverMeta{{Number: "1", Abbr: "AAA", Team: "Team A", Color: "#FFFFFF"}}
+	timing := map[string][]timingState{
+		"1": {
+			{T: 0.0, Lap: 1, Position: 1},
+			{T: 1.0, Lap: 1, Position: 1},
+		},
+	}
+	positions := map[string][]posSample{
+		"1": {
+			{T: 0.0, X: 10, Y: 5},
+			{T: 1.0, X: 20, Y: 5},
+		},
+	}
+	cars := map[string][]carSample{
+		"1": {
+			{T: 0.0, Speed: 100, Throttle: 20, Brake: false, Gear: 3, RPM: 9000, DRS: 8},
+			{T: 1.0, Speed: 200, Throttle: 60, Brake: true, Gear: 6, RPM: 12000, DRS: 10},
+		},
+	}
+
+	index, err := p.writeReplayFromTimelines(ctx, sessionID, drivers, timing, positions, cars, nil, nil, nil, "R", nil, map[string][]map[string]any{})
+	if err != nil {
+		t.Fatalf("writeReplayFromTimelines: %v", err)
+	}
+	frames, ok := index["frames"].([]map[string]any)
+	if !ok || len(frames) == 0 {
+		t.Fatalf("missing frame index data")
+	}
+	chunkSeq := asInt(frames[0]["chunk_seq"])
+	payload, codec, err := st.GetReplayChunkPayload(ctx, sessionID, chunkSeq)
+	if err != nil {
+		t.Fatalf("get replay chunk: %v", err)
+	}
+	decoded, err := storage.DecodeReplayChunk(payload, codec)
+	if err != nil {
+		t.Fatalf("decode replay chunk: %v", err)
+	}
+
+	var mid map[string]any
+	for _, fr := range decoded.Frames {
+		if fr.TimestampMs != 500 {
+			continue
+		}
+		if err := json.Unmarshal(fr.FrameJson, &mid); err != nil {
+			t.Fatalf("unmarshal mid frame: %v", err)
+		}
+		break
+	}
+	if mid == nil {
+		t.Fatalf("expected frame at 500ms")
+	}
+	driversAny, ok := mid["drivers"].([]any)
+	if !ok || len(driversAny) != 1 {
+		t.Fatalf("unexpected drivers payload: %#v", mid["drivers"])
+	}
+	row, ok := driversAny[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected driver row type: %#v", driversAny[0])
+	}
+
+	if math.Abs(asFloat(row["x"], -1)-0.5) > 1e-6 {
+		t.Fatalf("expected interpolated x=0.5, got %v", row["x"])
+	}
+	if math.Abs(asFloat(row["speed"], -1)-150.0) > 1e-6 {
+		t.Fatalf("expected interpolated speed=150, got %v", row["speed"])
+	}
+	if math.Abs(asFloat(row["throttle"], -1)-40.0) > 1e-6 {
+		t.Fatalf("expected interpolated throttle=40, got %v", row["throttle"])
+	}
+	if math.Abs(asFloat(row["rpm"], -1)-10500.0) > 1e-6 {
+		t.Fatalf("expected interpolated rpm=10500, got %v", row["rpm"])
+	}
+	if asInt(row["gear"]) != 3 {
+		t.Fatalf("expected previous gear=3, got %v", row["gear"])
+	}
+	if asInt(row["drs"]) != 8 {
+		t.Fatalf("expected previous drs=8, got %v", row["drs"])
+	}
+	if asBool(row["brake"]) {
+		t.Fatalf("expected previous brake=false, got true")
+	}
+}
+
+func TestWriteReplayFromTimelinesHonorsInterpolationGapGuardWithFallback(t *testing.T) {
+	dir := t.TempDir()
+	st := newTestStore(t, dir)
+	defer st.Close()
+	ctx := context.Background()
+
+	sessionID, err := st.UpsertSessionInfo(ctx, 2026, 98, "R", map[string]any{
+		"event_name": "Test GP",
+		"circuit":    "Test Circuit",
+		"country":    "Test",
+		"drivers": []any{
+			map[string]any{
+				"abbreviation":  "AAA",
+				"driver_number": "1",
+				"full_name":     "Driver A",
+				"team_name":     "Team A",
+				"team_color":    "#FFFFFF",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert session info: %v", err)
+	}
+
+	p := &GoSessionProcessor{
+		store:              st,
+		sampleEvery:        1.0,
+		replayInterpMaxGap: 0.4,
+		replayChunkFrames:  16,
+		replayChunkCodec:   storage.CodecProtobuf,
+	}
+	drivers := []driverMeta{{Number: "1", Abbr: "AAA", Team: "Team A", Color: "#FFFFFF"}}
+	timing := map[string][]timingState{
+		"1": {
+			{T: 0.0, Lap: 1, Position: 1},
+			{T: 2.0, Lap: 1, Position: 1},
+		},
+	}
+	positions := map[string][]posSample{
+		"1": {
+			{T: 0.0, X: 10, Y: 5},
+			{T: 2.0, X: 20, Y: 5},
+		},
+	}
+	cars := map[string][]carSample{
+		"1": {
+			{T: 0.0, Speed: 100, Throttle: 20, Brake: false, Gear: 3, RPM: 9000, DRS: 8},
+			{T: 2.0, Speed: 200, Throttle: 60, Brake: true, Gear: 6, RPM: 12000, DRS: 10},
+		},
+	}
+
+	index, err := p.writeReplayFromTimelines(ctx, sessionID, drivers, timing, positions, cars, nil, nil, nil, "R", nil, map[string][]map[string]any{})
+	if err != nil {
+		t.Fatalf("writeReplayFromTimelines: %v", err)
+	}
+	frames, ok := index["frames"].([]map[string]any)
+	if !ok || len(frames) == 0 {
+		t.Fatalf("missing frame index data")
+	}
+	chunkSeq := asInt(frames[0]["chunk_seq"])
+	payload, codec, err := st.GetReplayChunkPayload(ctx, sessionID, chunkSeq)
+	if err != nil {
+		t.Fatalf("get replay chunk: %v", err)
+	}
+	decoded, err := storage.DecodeReplayChunk(payload, codec)
+	if err != nil {
+		t.Fatalf("decode replay chunk: %v", err)
+	}
+
+	var mid map[string]any
+	for _, fr := range decoded.Frames {
+		if fr.TimestampMs != 1000 {
+			continue
+		}
+		if err := json.Unmarshal(fr.FrameJson, &mid); err != nil {
+			t.Fatalf("unmarshal mid frame: %v", err)
+		}
+		break
+	}
+	if mid == nil {
+		t.Fatalf("expected frame at 1000ms")
+	}
+	driversAny, ok := mid["drivers"].([]any)
+	if !ok || len(driversAny) != 1 {
+		t.Fatalf("unexpected drivers payload: %#v", mid["drivers"])
+	}
+	row, ok := driversAny[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected driver row type: %#v", driversAny[0])
+	}
+
+	// With max gap 0.4 and boundary distance 1.0s, interpolation is suppressed,
+	// but replay falls back to nearest/last sample instead of dropping to zero.
+	if math.Abs(asFloat(row["speed"], -1)-100.0) > 1e-6 {
+		t.Fatalf("expected speed fallback to previous sample 100, got %v", row["speed"])
+	}
 }
 
 func TestDeriveReplayWindow(t *testing.T) {

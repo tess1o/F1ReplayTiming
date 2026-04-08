@@ -33,7 +33,7 @@ interface Props {
   q3HideCompareOverlay?: boolean;
 }
 
-// Longer than the 500ms frame interval so the dot is always still moving
+// Longer than the replay frame interval so the dot is always still moving
 // when the next target arrives - the more overlap, the smoother the motion
 const BASE_INTERP_MS = 750;
 

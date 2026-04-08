@@ -106,7 +106,28 @@ function parseCompareTelemetryLap(raw: unknown): CompareTelemetryLap | null {
   };
 }
 
-function sampleAtProgress(arr: number[], progress: number): number | null {
+function sampleLinearAtProgress(arr: number[], progress: number): number | null {
+  if (!arr.length) return null;
+  if (arr.length === 1) {
+    const only = arr[0];
+    return Number.isFinite(only) ? only : null;
+  }
+  const clamped = Math.max(0, Math.min(1, progress));
+  const scaled = clamped * (arr.length - 1);
+  const idx = Math.floor(scaled);
+  const nextIdx = Math.min(arr.length - 1, idx + 1);
+  const a = arr[idx];
+  const b = arr[nextIdx];
+  const ratio = scaled - idx;
+  if (Number.isFinite(a) && Number.isFinite(b)) {
+    return a + (b - a) * ratio;
+  }
+  if (Number.isFinite(a)) return a;
+  if (Number.isFinite(b)) return b;
+  return null;
+}
+
+function sampleDiscretePrevAtProgress(arr: number[], progress: number): number | null {
   if (!arr.length) return null;
   const clamped = Math.max(0, Math.min(1, progress));
   const idx = Math.min(arr.length - 1, Math.max(0, Math.floor(clamped * (arr.length - 1))));
@@ -577,12 +598,12 @@ export default function ReplayPage() {
         ? Math.max(0, Math.min(1, q3PlaybackTime / line.lapTimeSeconds))
         : 0;
 
-      const speed = telemetryLap ? sampleAtProgress(telemetryLap.speed, progress) : null;
-      const throttle = telemetryLap ? sampleAtProgress(telemetryLap.throttle, progress) : null;
-      const brake = telemetryLap ? sampleAtProgress(telemetryLap.brake, progress) : null;
-      const gear = telemetryLap ? sampleAtProgress(telemetryLap.gear, progress) : null;
-      const rpm = telemetryLap ? sampleAtProgress(telemetryLap.rpm, progress) : null;
-      const drs = telemetryLap ? sampleAtProgress(telemetryLap.drs, progress) : null;
+      const speed = telemetryLap ? sampleLinearAtProgress(telemetryLap.speed, progress) : null;
+      const throttle = telemetryLap ? sampleLinearAtProgress(telemetryLap.throttle, progress) : null;
+      const brake = telemetryLap ? sampleDiscretePrevAtProgress(telemetryLap.brake, progress) : null;
+      const gear = telemetryLap ? sampleDiscretePrevAtProgress(telemetryLap.gear, progress) : null;
+      const rpm = telemetryLap ? sampleLinearAtProgress(telemetryLap.rpm, progress) : null;
+      const drs = telemetryLap ? sampleDiscretePrevAtProgress(telemetryLap.drs, progress) : null;
 
       let sectors = replayDriver?.sectors || null;
       const sectorColors = q3DriverMap.get(abbr)?.sector_colors;
@@ -751,8 +772,8 @@ export default function ReplayPage() {
       if (state === "processing") {
         const a = downloadStatus?.attempt || 0;
         const m = downloadStatus?.max_attempts || 0;
-        if (a > 0 && m > 0) return `Attempt ${a} of ${m}. First processing can take a few minutes.`;
-        return "First processing can take a few minutes.";
+        if (a > 1 && m > 0) return `Attempt ${a} of ${m}. First processing can take a few minutes.`;
+        return "";
       }
       if (state === "queued") return "The backend is processing jobs in FIFO order.";
       if (state === "failed") return downloadStatus?.last_error || "Please retry download.";
@@ -764,7 +785,7 @@ export default function ReplayPage() {
         <div className="text-center max-w-xl">
           <div className="inline-block w-12 h-12 border-[3px] border-f1-muted border-t-f1-red rounded-full animate-spin mb-6" />
           <p className="text-white text-xl font-bold mb-2">{statusText}</p>
-          <p className="text-f1-muted text-sm mb-2">{details}</p>
+          {details && <p className="text-f1-muted text-sm mb-2">{details}</p>}
           {statusError && <p className="text-red-400 text-sm mb-4">{statusError}</p>}
           <div className="flex items-center justify-center gap-3 mt-6">
             {state === "failed" && (

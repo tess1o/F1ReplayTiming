@@ -13,6 +13,8 @@ import (
 	"f1replaytiming/backend/storage"
 )
 
+const replayFallbackMaxGapSeconds = 10.0
+
 func (p *GoSessionProcessor) writeReplayFromTimelines(ctx context.Context, sessionID int64, drivers []driverMeta, timing map[string][]timingState, positions map[string][]posSample, cars map[string][]carSample, trackStatuses []trackStatusPoint, weather []weatherPoint, rc []raceControlPoint, sessionType string, window *replayWindow, stintsByAbbr map[string][]map[string]any) (map[string]any, error) {
 	var tMin float64
 	var tMax float64
@@ -110,9 +112,17 @@ func (p *GoSessionProcessor) writeReplayFromTimelines(ctx context.Context, sessi
 	for t := startT; t <= endT; t += p.sampleEvery {
 		driverRows := make([]map[string]any, 0, len(drivers))
 		for _, d := range drivers {
-			ps := nearestPosSampleWithin(positions[d.Number], t, 10.0)
+			ps := interpolatePosSampleAt(positions[d.Number], t, p.replayInterpMaxGap)
+			if ps == nil {
+				// Fallback keeps cars visible when sparse/misaligned samples make
+				// strict interpolation unavailable for a frame.
+				ps = nearestPosSampleWithin(positions[d.Number], t, replayFallbackMaxGapSeconds)
+			}
 			ts := latestTimingAt(timing[d.Number], t)
-			cs := latestCarAt(cars[d.Number], t)
+			cs := interpolateCarSampleAt(cars[d.Number], t, p.replayInterpMaxGap)
+			if cs == nil {
+				cs = latestCarAt(cars[d.Number], t)
+			}
 			row := map[string]any{
 				"abbr":              d.Abbr,
 				"x":                 0.0,

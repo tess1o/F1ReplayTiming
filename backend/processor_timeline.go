@@ -101,6 +101,70 @@ func interpolatePosSampleAt(arr []posSample, t, maxDeltaSeconds float64) *posSam
 	}
 }
 
+func interpolateCarSampleAt(arr []carSample, t, maxDeltaSeconds float64) *carSample {
+	if len(arr) == 0 {
+		return nil
+	}
+	cloneAt := func(src carSample) *carSample {
+		return &carSample{
+			T:        t,
+			Speed:    src.Speed,
+			Throttle: src.Throttle,
+			Brake:    src.Brake,
+			Gear:     src.Gear,
+			RPM:      src.RPM,
+			DRS:      src.DRS,
+		}
+	}
+
+	i := sort.Search(len(arr), func(i int) bool { return arr[i].T >= t })
+	if i < len(arr) && math.Abs(arr[i].T-t) <= 1e-9 {
+		return cloneAt(arr[i])
+	}
+	if i == 0 {
+		first := arr[0]
+		if maxDeltaSeconds > 0 && math.Abs(first.T-t) > maxDeltaSeconds {
+			return nil
+		}
+		return cloneAt(first)
+	}
+	if i >= len(arr) {
+		last := arr[len(arr)-1]
+		if maxDeltaSeconds > 0 && math.Abs(last.T-t) > maxDeltaSeconds {
+			return nil
+		}
+		return cloneAt(last)
+	}
+
+	prev := arr[i-1]
+	next := arr[i]
+	if maxDeltaSeconds > 0 {
+		if (t-prev.T) > maxDeltaSeconds || (next.T-t) > maxDeltaSeconds {
+			return nil
+		}
+	}
+	dt := next.T - prev.T
+	if dt <= 1e-9 {
+		return cloneAt(prev)
+	}
+	ratio := (t - prev.T) / dt
+	if ratio < 0 {
+		ratio = 0
+	} else if ratio > 1 {
+		ratio = 1
+	}
+
+	return &carSample{
+		T:        t,
+		Speed:    prev.Speed + (next.Speed-prev.Speed)*ratio,
+		Throttle: prev.Throttle + (next.Throttle-prev.Throttle)*ratio,
+		Brake:    prev.Brake,
+		Gear:     prev.Gear,
+		RPM:      prev.RPM + (next.RPM-prev.RPM)*ratio,
+		DRS:      prev.DRS,
+	}
+}
+
 func latestCarAt(arr []carSample, t float64) *carSample {
 	if len(arr) == 0 {
 		return nil

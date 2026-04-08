@@ -21,6 +21,7 @@ type GoSessionProcessor struct {
 	baseURL               string
 	httpClient            *http.Client
 	sampleEvery           float64
+	replayInterpMaxGap    float64
 	fetchWorkers          int
 	parseWorkers          int
 	replayChunkFrames     int
@@ -158,7 +159,7 @@ func NewGoSessionProcessor(dataDir string, store *storage.Store, replayChunkFram
 	if baseURL == "" {
 		baseURL = defaultF1StaticBase
 	}
-	sampleEvery := 0.5
+	sampleEvery := 0.25
 	if raw := strings.TrimSpace(os.Getenv("REPLAY_SAMPLE_INTERVAL_SECONDS")); raw != "" {
 		if v, err := strconv.ParseFloat(raw, 64); err == nil && v > 0 {
 			sampleEvery = v
@@ -166,6 +167,18 @@ func NewGoSessionProcessor(dataDir string, store *storage.Store, replayChunkFram
 	}
 	if sampleEvery < 0.25 {
 		sampleEvery = 0.25
+	}
+	replayInterpMaxGap := 1.2
+	if raw := strings.TrimSpace(os.Getenv("REPLAY_INTERP_MAX_GAP_SECONDS")); raw != "" {
+		if v, err := strconv.ParseFloat(raw, 64); err == nil && v > 0 {
+			replayInterpMaxGap = v
+		}
+	}
+	if replayInterpMaxGap < 0.1 {
+		replayInterpMaxGap = 0.1
+	}
+	if replayInterpMaxGap > 2.0 {
+		replayInterpMaxGap = 2.0
 	}
 	fetchWorkers := 3
 	if raw := strings.TrimSpace(os.Getenv("PROCESS_FETCH_CONCURRENCY")); raw != "" {
@@ -218,6 +231,7 @@ func NewGoSessionProcessor(dataDir string, store *storage.Store, replayChunkFram
 			Timeout: 120 * time.Second,
 		},
 		sampleEvery:           sampleEvery,
+		replayInterpMaxGap:    replayInterpMaxGap,
 		fetchWorkers:          fetchWorkers,
 		parseWorkers:          parseWorkers,
 		replayChunkFrames:     replayChunkFrames,
