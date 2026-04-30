@@ -17,6 +17,7 @@ const defaultF1StaticBase = "https://livetiming.formula1.com/static"
 const defaultF1EditorialBase = "https://api.formula1.com"
 const defaultF1EditorialAPIKey = "BQ1SiSmLUOsp460VzXBlLrh689kGgYEZ"
 const defaultF1EditorialLocale = "en"
+const defaultOpenF1Base = "https://api.openf1.org/v1"
 
 type GoSessionProcessor struct {
 	dataDir               string
@@ -25,6 +26,7 @@ type GoSessionProcessor struct {
 	editorialBaseURL      string
 	editorialAPIKey       string
 	editorialLocale       string
+	openF1BaseURL         string
 	httpClient            *http.Client
 	sampleEvery           float64
 	replayInterpMaxGap    float64
@@ -240,6 +242,10 @@ func NewGoSessionProcessor(dataDir string, store *storage.Store, replayChunkFram
 	if editorialLocale == "" {
 		editorialLocale = defaultF1EditorialLocale
 	}
+	openF1BaseURL := strings.TrimSpace(os.Getenv("OPENF1_BASE_URL"))
+	if openF1BaseURL == "" {
+		openF1BaseURL = defaultOpenF1Base
+	}
 
 	return &GoSessionProcessor{
 		dataDir:          dataDir,
@@ -248,6 +254,7 @@ func NewGoSessionProcessor(dataDir string, store *storage.Store, replayChunkFram
 		editorialBaseURL: strings.TrimRight(editorialBaseURL, "/"),
 		editorialAPIKey:  editorialAPIKey,
 		editorialLocale:  editorialLocale,
+		openF1BaseURL:    strings.TrimRight(openF1BaseURL, "/"),
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},

@@ -14,6 +14,18 @@ import (
 )
 
 func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int, sessionType string, onStatus func(string)) error {
+	err := p.processSessionViaLiveTiming(ctx, year, round, sessionType, onStatus)
+	if err == nil {
+		return nil
+	}
+	if !isLiveTimingBlockedError(err) {
+		return err
+	}
+	log.Printf("processor(go): livetiming provider blocked, falling back to openf1 year=%d round=%d type=%s err=%v", year, round, strings.ToUpper(strings.TrimSpace(sessionType)), err)
+	return p.processSessionViaOpenF1(ctx, year, round, sessionType, onStatus)
+}
+
+func (p *GoSessionProcessor) processSessionViaLiveTiming(ctx context.Context, year, round int, sessionType string, onStatus func(string)) error {
 	if p.store == nil {
 		return errors.New("sqlite store is not configured")
 	}
@@ -231,6 +243,20 @@ func parseRaceControlMessages(raw map[string]any) []raceControlPoint {
 		out = append(out, raceControlPoint{T: ts, Message: entry})
 	}
 	return out
+}
+
+func isLiveTimingBlockedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	if !strings.Contains(s, "livetiming.formula1.com") {
+		return false
+	}
+	if strings.Contains(s, "-> 403") || strings.Contains(s, "request blocked") || strings.Contains(s, "cloudfront") {
+		return true
+	}
+	return false
 }
 
 func buildInfoJSON(year, round int, sessionType string, meeting *seasonMeeting, sessionInfo map[string]any, drivers []driverMeta) map[string]any {
