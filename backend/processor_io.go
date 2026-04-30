@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -279,6 +280,12 @@ func newIPv4HTTPClient(base *http.Client) *http.Client {
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ForceAttemptHTTP2 = false
+	transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	dialer := &net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
