@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -61,17 +62,28 @@ func (a *app) handleSeasonEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("api: season events request year=%d", year)
 	data, err := a.buildEvents(year)
 	if err != nil || data == nil {
+		if err != nil {
+			log.Printf("api: buildEvents miss year=%d err=%v", year, err)
+		}
 		if err2 := a.ensureSchedule(year); err2 != nil {
+			log.Printf("api: ensureSchedule failed year=%d err=%v", year, err2)
 			writeJSON(w, http.StatusNotFound, map[string]any{"detail": fmt.Sprintf("No schedule data for %d", year)})
 			return
 		}
 		data, err = a.buildEvents(year)
 	}
 	if err != nil || data == nil {
+		if err != nil {
+			log.Printf("api: buildEvents after refresh failed year=%d err=%v", year, err)
+		}
 		writeJSON(w, http.StatusNotFound, map[string]any{"detail": fmt.Sprintf("No schedule data for %d", year)})
 		return
+	}
+	if events, ok := data["events"].([]any); ok {
+		log.Printf("api: season events ready year=%d events=%d", year, len(events))
 	}
 	writeJSON(w, http.StatusOK, data)
 }

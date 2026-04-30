@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,9 +16,12 @@ import (
 func (a *app) ensureSchedule(year int) error {
 	path := filepath.Join("seasons", strconv.Itoa(year), "schedule.json")
 	forceRefresh := a.shouldForceScheduleRefresh(year)
-	if a.fileExists(path) && !forceRefresh {
+	exists := a.fileExists(path)
+	if exists && !forceRefresh {
+		log.Printf("schedule: using cached schedule year=%d path=%s", year, path)
 		return nil
 	}
+	log.Printf("schedule: rebuild requested year=%d path=%s cached=%t force_refresh=%t", year, path, exists, forceRefresh)
 
 	a.scheduleLockMu.Lock()
 	lock := a.scheduleLocks[year]
@@ -31,13 +35,21 @@ func (a *app) ensureSchedule(year int) error {
 	defer lock.Unlock()
 
 	if a.fileExists(path) && !forceRefresh {
+		log.Printf("schedule: another worker refreshed schedule year=%d path=%s", year, path)
 		return nil
 	}
 
 	if a.processor == nil {
+		log.Printf("schedule: processor missing year=%d", year)
 		return errors.New("session processor is not initialized")
 	}
-	return a.processor.EnsureSchedule(context.Background(), year)
+	err := a.processor.EnsureSchedule(context.Background(), year)
+	if err != nil {
+		log.Printf("schedule: rebuild failed year=%d err=%v", year, err)
+		return err
+	}
+	log.Printf("schedule: rebuild complete year=%d", year)
+	return nil
 }
 
 func (a *app) shouldForceScheduleRefresh(year int) bool {
@@ -52,6 +64,7 @@ func (a *app) shouldForceScheduleRefresh(year int) bool {
 		return false
 	}
 	a.scheduleRefresh[year] = now
+	log.Printf("schedule: force refresh granted year=%d interval=%s last=%s now=%s", year, scheduleRefreshIntervalCurrentSeason, last.Format(time.RFC3339), now.Format(time.RFC3339))
 	return true
 }
 

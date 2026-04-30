@@ -18,13 +18,19 @@ func (p *GoSessionProcessor) EnsureSchedule(ctx context.Context, year int) error
 	if p.store == nil {
 		return errors.New("sqlite store is not configured")
 	}
+	log.Printf("processor(go): schedule ensure start year=%d", year)
+	events := make([]map[string]any, 0)
 	idx, err := p.fetchSeasonIndex(ctx, year)
 	if err != nil {
-		return err
+		log.Printf("processor(go): static season index unavailable for %d, using editorial fallback: %v", year, err)
+	} else {
+		events = p.buildScheduleEvents(idx)
+		log.Printf("processor(go): static schedule built year=%d rounds=%d", year, len(events))
 	}
-	events := p.buildScheduleEvents(idx)
 	events = p.mergeEditorialSchedule(ctx, year, events)
+	log.Printf("processor(go): schedule merged year=%d rounds=%d", year, len(events))
 	if len(events) == 0 {
+		log.Printf("processor(go): schedule ensure failed year=%d reason=empty schedule", year)
 		return errors.New("season schedule is empty")
 	}
 	out := map[string]any{
@@ -33,9 +39,15 @@ func (p *GoSessionProcessor) EnsureSchedule(ctx context.Context, year int) error
 	}
 	rel := filepath.Join("seasons", strconv.Itoa(year), "schedule.json")
 	if err := p.writeJSONAtomic(rel, out); err != nil {
+		log.Printf("processor(go): schedule write artifact failed year=%d err=%v", year, err)
 		return err
 	}
-	return p.store.UpsertSchedule(ctx, year, out)
+	if err := p.store.UpsertSchedule(ctx, year, out); err != nil {
+		log.Printf("processor(go): schedule upsert failed year=%d err=%v", year, err)
+		return err
+	}
+	log.Printf("processor(go): schedule ensure complete year=%d rounds=%d", year, len(events))
+	return nil
 }
 
 func (p *GoSessionProcessor) fetchSeasonIndex(ctx context.Context, year int) (*seasonIndex, error) {
@@ -138,9 +150,11 @@ type editorialMeetingSession struct {
 
 func (p *GoSessionProcessor) mergeEditorialSchedule(ctx context.Context, year int, events []map[string]any) []map[string]any {
 	if strings.TrimSpace(p.editorialAPIKey) == "" {
+		log.Printf("processor(go): editorial merge skipped year=%d reason=empty api key", year)
 		return events
 	}
 	if strings.TrimSpace(p.editorialBaseURL) == "" {
+		log.Printf("processor(go): editorial merge skipped year=%d reason=empty base url", year)
 		return events
 	}
 
@@ -149,6 +163,7 @@ func (p *GoSessionProcessor) mergeEditorialSchedule(ctx context.Context, year in
 		log.Printf("processor(go): editorial schedule fallback unavailable: %v", err)
 		return events
 	}
+	log.Printf("processor(go): editorial listing loaded year=%d events=%d", year, len(listing.Events))
 
 	existingRounds := make(map[int]struct{}, len(events))
 	for _, evt := range events {
@@ -160,29 +175,44 @@ func (p *GoSessionProcessor) mergeEditorialSchedule(ctx context.Context, year in
 
 	out := append([]map[string]any{}, events...)
 	now := time.Now().UTC()
+	var stats struct {
+		testSkipped      int
+		invalidRound     int
+		alreadyPresent   int
+		invalidMeetingID int
+		fetchFailed      int
+		endedSkipped     int
+		merged           int
+	}
 	for _, item := range listing.Events {
 		if item.IsTestEvent || isTestingMeeting(item.MeetingName, item.MeetingOfficial) {
+			stats.testSkipped++
 			continue
 		}
 		round := parseRoundText(item.RoundText)
 		if round <= 0 {
+			stats.invalidRound++
 			continue
 		}
 		if _, ok := existingRounds[round]; ok {
+			stats.alreadyPresent++
 			continue
 		}
 
 		meetingID, err := strconv.Atoi(strings.TrimSpace(item.MeetingKey))
 		if err != nil || meetingID <= 0 {
+			stats.invalidMeetingID++
 			continue
 		}
 
 		evt, err := p.fetchEditorialRaceEvent(ctx, meetingID)
 		if err != nil {
 			log.Printf("processor(go): failed to fetch editorial race details for round %d (meeting=%d): %v", round, meetingID, err)
+			stats.fetchFailed++
 			continue
 		}
 		if editorialFallbackEventEnded(evt, now) {
+			stats.endedSkipped++
 			continue
 		}
 
@@ -191,12 +221,15 @@ func (p *GoSessionProcessor) mergeEditorialSchedule(ctx context.Context, year in
 		}
 		out = append(out, evt)
 		existingRounds[round] = struct{}{}
+		stats.merged++
 	}
 
 	sort.Slice(out, func(i, j int) bool {
 		return asInt(out[i]["round_number"]) < asInt(out[j]["round_number"])
 	})
 	p.recomputeScheduleStatuses(out, now)
+	log.Printf("processor(go): editorial merge summary year=%d listing=%d base_rounds=%d merged=%d already_present=%d test_skipped=%d invalid_round=%d invalid_meeting=%d fetch_failed=%d ended_skipped=%d total=%d",
+		year, len(listing.Events), len(events), stats.merged, stats.alreadyPresent, stats.testSkipped, stats.invalidRound, stats.invalidMeetingID, stats.fetchFailed, stats.endedSkipped, len(out))
 	return out
 }
 

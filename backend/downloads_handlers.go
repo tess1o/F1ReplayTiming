@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -113,13 +114,18 @@ func (a *app) handleDownloadRetryFailed(w http.ResponseWriter, r *http.Request) 
 
 func (a *app) loadScheduleEvents(year int) ([]any, error) {
 	if err := a.ensureSchedule(year); err != nil {
+		log.Printf("downloads: ensureSchedule failed year=%d err=%v", year, err)
 		return nil, fmt.Errorf("No schedule for %d", year)
 	}
 	root, err := a.buildEvents(year)
 	if err != nil || root == nil {
+		if err != nil {
+			log.Printf("downloads: buildEvents failed year=%d err=%v", year, err)
+		}
 		return nil, fmt.Errorf("No schedule for %d", year)
 	}
 	events, _ := root["events"].([]any)
+	log.Printf("downloads: schedule events loaded year=%d events=%d", year, len(events))
 	return events, nil
 }
 
