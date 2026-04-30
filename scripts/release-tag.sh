@@ -101,7 +101,7 @@ if [[ -z "$MESSAGE" ]]; then
 fi
 
 git rev-parse --git-dir >/dev/null 2>&1 || die "Not inside a git repository"
-git rev-parse --verify "${TARGET}^{commit}" >/dev/null 2>&1 || die "Target commit not found: ${TARGET}"
+TARGET_COMMIT="$(git rev-parse --verify "${TARGET}^{commit}" 2>/dev/null)" || die "Target commit not found: ${TARGET}"
 
 if [[ "$FORCE" == "0" ]]; then
   if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
@@ -110,13 +110,13 @@ if [[ "$FORCE" == "0" ]]; then
   if git ls-remote --exit-code --tags "$REMOTE" "refs/tags/${TAG}" >/dev/null 2>&1; then
     die "Remote tag already exists on ${REMOTE}: ${TAG}. Use --force to override."
   fi
-  cmd git tag -a "$TAG" "$TARGET" -m "$MESSAGE"
+  cmd git tag -a "$TAG" "$TARGET_COMMIT" -m "$MESSAGE"
   cmd git push "$REMOTE" "refs/tags/${TAG}"
-  echo "Tag pushed: ${TAG} -> ${REMOTE}"
+  echo "Tag pushed: ${TAG} -> ${REMOTE} (target=${TARGET_COMMIT})"
   exit 0
 fi
 
 echo "Force mode enabled: tag '${TAG}' will be overwritten on ${REMOTE}"
-cmd git tag -fa "$TAG" "$TARGET" -m "$MESSAGE"
+cmd git tag -fa "$TAG" "$TARGET_COMMIT" -m "$MESSAGE"
 cmd git push --force "$REMOTE" "refs/tags/${TAG}"
-echo "Tag force-pushed: ${TAG} -> ${REMOTE}"
+echo "Tag force-pushed: ${TAG} -> ${REMOTE} (target=${TARGET_COMMIT})"

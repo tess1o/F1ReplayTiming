@@ -17,13 +17,17 @@ export function useApi<T>(path: string | null) {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setData(null);
 
     apiFetch<T>(path)
       .then((result) => {
         if (!cancelled) setData(result);
       })
       .catch((err) => {
-        if (!cancelled) setError(err.message);
+        if (!cancelled) {
+          setError(err.message);
+          setData(null);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

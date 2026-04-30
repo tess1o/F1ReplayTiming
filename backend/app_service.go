@@ -16,6 +16,10 @@ import (
 func (a *app) ensureSchedule(year int) error {
 	path := filepath.Join("seasons", strconv.Itoa(year), "schedule.json")
 	forceRefresh := a.shouldForceScheduleRefresh(year)
+	if stale, v := a.scheduleArtifactNeedsUpgrade(year); stale {
+		log.Printf("schedule: artifact upgrade required year=%d current_version=%d required_version=%d", year, v, scheduleArtifactVersion)
+		forceRefresh = true
+	}
 	exists := a.fileExists(path)
 	if exists && !forceRefresh {
 		log.Printf("schedule: using cached schedule year=%d path=%s", year, path)
@@ -66,6 +70,22 @@ func (a *app) shouldForceScheduleRefresh(year int) bool {
 	a.scheduleRefresh[year] = now
 	log.Printf("schedule: force refresh granted year=%d interval=%s last=%s now=%s", year, scheduleRefreshIntervalCurrentSeason, last.Format(time.RFC3339), now.Format(time.RFC3339))
 	return true
+}
+
+func (a *app) scheduleArtifactNeedsUpgrade(year int) (bool, int) {
+	raw, err := a.readJSONAny(filepath.Join("seasons", strconv.Itoa(year), "schedule.json"))
+	if err != nil {
+		return false, 0
+	}
+	root, ok := raw.(map[string]any)
+	if !ok {
+		return true, 0
+	}
+	v := asInt(root["artifact_version"])
+	if v < scheduleArtifactVersion {
+		return true, v
+	}
+	return false, v
 }
 
 func (a *app) ensureSessionData(year, round int, sessionType string, onStatus func(string)) error {

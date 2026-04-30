@@ -34,8 +34,9 @@ func (p *GoSessionProcessor) EnsureSchedule(ctx context.Context, year int) error
 		return errors.New("season schedule is empty")
 	}
 	out := map[string]any{
-		"year":   year,
-		"events": events,
+		"year":             year,
+		"events":           events,
+		"artifact_version": scheduleArtifactVersion,
 	}
 	rel := filepath.Join("seasons", strconv.Itoa(year), "schedule.json")
 	if err := p.writeJSONAtomic(rel, out); err != nil {
@@ -181,7 +182,6 @@ func (p *GoSessionProcessor) mergeEditorialSchedule(ctx context.Context, year in
 		alreadyPresent   int
 		invalidMeetingID int
 		fetchFailed      int
-		endedSkipped     int
 		merged           int
 	}
 	for _, item := range listing.Events {
@@ -211,11 +211,6 @@ func (p *GoSessionProcessor) mergeEditorialSchedule(ctx context.Context, year in
 			stats.fetchFailed++
 			continue
 		}
-		if editorialFallbackEventEnded(evt, now) {
-			stats.endedSkipped++
-			continue
-		}
-
 		if asInt(evt["round_number"]) <= 0 {
 			evt["round_number"] = round
 		}
@@ -228,8 +223,8 @@ func (p *GoSessionProcessor) mergeEditorialSchedule(ctx context.Context, year in
 		return asInt(out[i]["round_number"]) < asInt(out[j]["round_number"])
 	})
 	p.recomputeScheduleStatuses(out, now)
-	log.Printf("processor(go): editorial merge summary year=%d listing=%d base_rounds=%d merged=%d already_present=%d test_skipped=%d invalid_round=%d invalid_meeting=%d fetch_failed=%d ended_skipped=%d total=%d",
-		year, len(listing.Events), len(events), stats.merged, stats.alreadyPresent, stats.testSkipped, stats.invalidRound, stats.invalidMeetingID, stats.fetchFailed, stats.endedSkipped, len(out))
+	log.Printf("processor(go): editorial merge summary year=%d listing=%d base_rounds=%d merged=%d already_present=%d test_skipped=%d invalid_round=%d invalid_meeting=%d fetch_failed=%d total=%d",
+		year, len(listing.Events), len(events), stats.merged, stats.alreadyPresent, stats.testSkipped, stats.invalidRound, stats.invalidMeetingID, stats.fetchFailed, len(out))
 	return out
 }
 
@@ -301,20 +296,6 @@ func (p *GoSessionProcessor) fetchEditorialRaceEvent(ctx context.Context, meetin
 		"sessions":     sessions,
 		"status":       "future",
 	}, nil
-}
-
-func editorialFallbackEventEnded(evt map[string]any, now time.Time) bool {
-	sessions := sessionMapsFromEvent(evt)
-	if len(sessions) == 0 {
-		return false
-	}
-	last := sessions[len(sessions)-1]
-	dateStr := asString(last["date_utc"])
-	ts, ok := parseDateMaybe(dateStr)
-	if !ok {
-		return false
-	}
-	return now.After(ts.Add(6 * time.Hour))
 }
 
 func parseRoundText(raw string) int {

@@ -20,6 +20,7 @@ var (
 	}
 	availableSeasons                     = []int{2024, 2025, 2026, 2027, 2028}
 	scheduleRefreshIntervalCurrentSeason = 30 * time.Minute
+	scheduleArtifactVersion              = 2
 )
 
 type app struct {
