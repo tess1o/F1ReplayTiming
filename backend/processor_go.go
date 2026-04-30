@@ -27,6 +27,10 @@ type GoSessionProcessor struct {
 	editorialAPIKey       string
 	editorialLocale       string
 	openF1BaseURL         string
+	openF1MinInterval     time.Duration
+	openF1MaxRetries      int
+	openF1ReqMu           sync.Mutex
+	openF1LastReqAt       time.Time
 	httpClient            *http.Client
 	sampleEvery           float64
 	replayInterpMaxGap    float64
@@ -246,15 +250,19 @@ func NewGoSessionProcessor(dataDir string, store *storage.Store, replayChunkFram
 	if openF1BaseURL == "" {
 		openF1BaseURL = defaultOpenF1Base
 	}
+	openF1MinIntervalMS := readPositiveIntEnv("OPENF1_MIN_REQUEST_INTERVAL_MS", 450)
+	openF1MaxRetries := readPositiveIntEnv("OPENF1_MAX_RETRIES", 5)
 
 	return &GoSessionProcessor{
-		dataDir:          dataDir,
-		store:            store,
-		baseURL:          strings.TrimRight(baseURL, "/"),
-		editorialBaseURL: strings.TrimRight(editorialBaseURL, "/"),
-		editorialAPIKey:  editorialAPIKey,
-		editorialLocale:  editorialLocale,
-		openF1BaseURL:    strings.TrimRight(openF1BaseURL, "/"),
+		dataDir:           dataDir,
+		store:             store,
+		baseURL:           strings.TrimRight(baseURL, "/"),
+		editorialBaseURL:  strings.TrimRight(editorialBaseURL, "/"),
+		editorialAPIKey:   editorialAPIKey,
+		editorialLocale:   editorialLocale,
+		openF1BaseURL:     strings.TrimRight(openF1BaseURL, "/"),
+		openF1MinInterval: time.Duration(openF1MinIntervalMS) * time.Millisecond,
+		openF1MaxRetries:  openF1MaxRetries,
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"sort"
@@ -965,10 +967,54 @@ func (p *GoSessionProcessor) fetchOpenF1JSON(ctx context.Context, endpoint strin
 	if encoded := q.Encode(); encoded != "" {
 		u += "?" + encoded
 	}
-	if err := p.fetchJSON(ctx, u, out); err != nil {
-		return err
+	maxRetries := p.openF1MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 5
 	}
-	return nil
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if err := p.waitOpenF1Turn(ctx); err != nil {
+			return err
+		}
+		resp, err := doRequestWithClient(ctx, u, nil, p.httpClient)
+		if err != nil {
+			lastErr = err
+			if attempt < maxRetries {
+				if waitErr := p.sleepWithContext(ctx, p.openF1RetryDelay(attempt, 0)); waitErr != nil {
+					return waitErr
+				}
+				continue
+			}
+			return err
+		}
+		body, readErr := readResponseBody(resp)
+		if readErr != nil {
+			lastErr = readErr
+			if attempt < maxRetries {
+				if waitErr := p.sleepWithContext(ctx, p.openF1RetryDelay(attempt, 0)); waitErr != nil {
+					return waitErr
+				}
+				continue
+			}
+			return readErr
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return json.Unmarshal(trimBOM(body), out)
+		}
+		lastErr = fmt.Errorf("http %s -> %d: %s", u, resp.StatusCode, strings.TrimSpace(string(body)))
+		if resp.StatusCode != 429 || attempt >= maxRetries {
+			return lastErr
+		}
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+		log.Printf("processor(openf1): rate limited endpoint=%s attempt=%d/%d retry_after=%s", endpoint, attempt, maxRetries, retryAfter)
+		if waitErr := p.sleepWithContext(ctx, p.openF1RetryDelay(attempt, retryAfter)); waitErr != nil {
+			return waitErr
+		}
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("http %s failed after retries", u)
 }
 
 func fetchOpenF1Chunked[T any](ctx context.Context, p *GoSessionProcessor, endpoint string, sessionKey int, startUTC, endUTC time.Time) ([]T, error) {
@@ -998,4 +1044,80 @@ func fetchOpenF1Chunked[T any](ctx context.Context, p *GoSessionProcessor, endpo
 		out = append(out, part...)
 	}
 	return out, nil
+}
+
+func (p *GoSessionProcessor) waitOpenF1Turn(ctx context.Context) error {
+	minInterval := p.openF1MinInterval
+	if minInterval <= 0 {
+		minInterval = 450 * time.Millisecond
+	}
+	for {
+		p.openF1ReqMu.Lock()
+		wait := minInterval - time.Since(p.openF1LastReqAt)
+		if wait <= 0 {
+			p.openF1LastReqAt = time.Now()
+			p.openF1ReqMu.Unlock()
+			return nil
+		}
+		p.openF1ReqMu.Unlock()
+		if err := p.sleepWithContext(ctx, wait); err != nil {
+			return err
+		}
+	}
+}
+
+func (p *GoSessionProcessor) openF1RetryDelay(attempt int, retryAfter time.Duration) time.Duration {
+	if retryAfter > 0 {
+		return retryAfter
+	}
+	delay := time.Duration(attempt) * time.Second
+	if delay > 15*time.Second {
+		delay = 15 * time.Second
+	}
+	return delay
+}
+
+func (p *GoSessionProcessor) sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func readResponseBody(resp *http.Response) ([]byte, error) {
+	if resp == nil {
+		return nil, errors.New("empty http response")
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
+func parseRetryAfter(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	if sec, err := strconv.Atoi(raw); err == nil && sec > 0 {
+		return time.Duration(sec) * time.Second
+	}
+	if ts, err := time.Parse(time.RFC1123, raw); err == nil {
+		d := time.Until(ts)
+		if d > 0 {
+			return d
+		}
+	}
+	if ts, err := time.Parse(time.RFC1123Z, raw); err == nil {
+		d := time.Until(ts)
+		if d > 0 {
+			return d
+		}
+	}
+	return 0
 }
