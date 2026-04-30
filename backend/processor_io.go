@@ -160,6 +160,19 @@ func (p *GoSessionProcessor) fetchJSON(ctx context.Context, url string, out any)
 	return json.Unmarshal(body, out)
 }
 
+func (p *GoSessionProcessor) fetchJSONWithHeaders(ctx context.Context, url string, headers map[string]string, out any) error {
+	resp, err := p.doRequestWithHeaders(ctx, url, headers)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(trimBOM(body), out)
+}
+
 func (p *GoSessionProcessor) fetchBytes(ctx context.Context, url string) ([]byte, error) {
 	resp, err := p.doRequest(ctx, url)
 	if err != nil {
@@ -178,9 +191,19 @@ func trimBOM(b []byte) []byte {
 }
 
 func (p *GoSessionProcessor) doRequest(ctx context.Context, url string) (*http.Response, error) {
+	return p.doRequestWithHeaders(ctx, url, nil)
+}
+
+func (p *GoSessionProcessor) doRequestWithHeaders(ctx context.Context, url string, headers map[string]string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
+	}
+	for k, v := range headers {
+		if strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
+			continue
+		}
+		req.Header.Set(k, v)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {

@@ -164,7 +164,7 @@ func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int
 	}
 
 	status("Writing telemetry by driver...")
-	if err := p.writeTelemetryFiles(ctx, sessionID, drivers, carTimeline, posTimeline, timingTimeline); err != nil {
+	if err := p.writeTelemetryFiles(ctx, sessionID, drivers, carTimeline, posTimeline, timingTimeline, laps); err != nil {
 		return err
 	}
 	if err := p.store.SetSessionReady(ctx, sessionID, true); err != nil {
@@ -468,12 +468,23 @@ func buildQ3LinesJSON(drivers []driverMeta, byNum map[string]driverMeta, laps []
 		if !ok {
 			meta = byNum[number]
 		}
+		lapStartTS := any(nil)
+		lapEndTS := any(nil)
+		if best.EndTs > 0 && best.Seconds > 0 {
+			start := best.EndTs - best.Seconds
+			if start >= 0 {
+				lapStartTS = round3(start)
+				lapEndTS = round3(best.EndTs)
+			}
+		}
 		entries = append(entries, map[string]any{
 			"abbr":             abbr,
 			"driver_number":    number,
 			"team":             meta.Team,
 			"color":            meta.Color,
 			"lap_number":       best.Lap,
+			"lap_start_ts":     lapStartTS,
+			"lap_end_ts":       lapEndTS,
 			"lap_time":         best.TimeStr,
 			"lap_time_seconds": round3(best.Seconds),
 			"sector1":          nilIfEmptyString(best.Sector1),

@@ -53,11 +53,12 @@ func newAppFromEnv() *app {
 			readPositiveInt64Env("REPLAY_CACHE_MAX_MB", 256)*1024*1024,
 			readPositiveDurationSecondsEnv("REPLAY_CACHE_TTL_SECONDS", 5*time.Minute),
 		),
-		allowedOrigins: buildAllowedOrigins(),
-		authEnabled:    isTrue(os.Getenv("AUTH_ENABLED")),
-		authPassphrase: os.Getenv("AUTH_PASSPHRASE"),
-		sessionLocks:   make(map[string]*sync.Mutex),
-		scheduleLocks:  make(map[int]*sync.Mutex),
+		allowedOrigins:  buildAllowedOrigins(),
+		authEnabled:     isTrue(os.Getenv("AUTH_ENABLED")),
+		authPassphrase:  os.Getenv("AUTH_PASSPHRASE"),
+		sessionLocks:    make(map[string]*sync.Mutex),
+		scheduleLocks:   make(map[int]*sync.Mutex),
+		scheduleRefresh: make(map[int]time.Time),
 	}
 	application.processor = NewSessionProcessor(dataDir, store, replayChunkFrames, telemetryChunkSamples)
 	application.downloads = newDownloadManager(application, dataDir)

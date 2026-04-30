@@ -563,6 +563,326 @@ func TestBuildQ3LinesJSONFallbacksMissingSectorColorsWithinQ3(t *testing.T) {
 	}
 }
 
+func TestWriteTelemetryFilesPrefersLapWindowsOverLapAt(t *testing.T) {
+	dir := t.TempDir()
+	st := newTestStore(t, dir)
+	defer st.Close()
+	ctx := context.Background()
+
+	const year, round = 2026, 77
+	const sessionType = "Q"
+	sessionID, err := st.UpsertSessionInfo(ctx, year, round, sessionType, map[string]any{
+		"event_name": "Window Preference GP",
+		"circuit":    "Test Circuit",
+		"country":    "Test",
+		"drivers": []any{
+			map[string]any{
+				"abbreviation":  "AAA",
+				"driver_number": "1",
+				"full_name":     "Driver A",
+				"team_name":     "Team A",
+				"team_color":    "#FFFFFF",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert session info: %v", err)
+	}
+
+	p := &GoSessionProcessor{
+		store:                 st,
+		telemetryChunkSamples: 512,
+		telemetryChunkCodec:   storage.CodecProtobuf,
+	}
+	drivers := []driverMeta{{Number: "1", Abbr: "AAA", Team: "Team A", Color: "#FFFFFF"}}
+	timing := map[string][]timingState{
+		"1": {
+			{T: 0, Lap: 1},
+			{T: 60, Lap: 2},
+			{T: 120, Lap: 3},
+		},
+	}
+	cars := map[string][]carSample{
+		"1": {
+			// Intended best-lap window [10,20]
+			{T: 12, Speed: 298, Throttle: 99, Brake: false, Gear: 8, RPM: 11800, DRS: 12},
+			{T: 15, Speed: 305, Throttle: 100, Brake: false, Gear: 8, RPM: 12100, DRS: 12},
+			{T: 18, Speed: 292, Throttle: 97, Brake: false, Gear: 7, RPM: 11600, DRS: 10},
+			// lapAt-only lap 2 samples (should be ignored when window is usable)
+			{T: 75, Speed: 45, Throttle: 18, Brake: true, Gear: 1, RPM: 6200, DRS: 0},
+			{T: 78, Speed: 52, Throttle: 20, Brake: true, Gear: 1, RPM: 6400, DRS: 0},
+		},
+	}
+	laps := []map[string]any{
+		{
+			"driver":     "AAA",
+			"lap_number": 2,
+			"lap_time":   "0:10.000",
+			"time":       20.0,
+		},
+	}
+
+	if err := p.writeTelemetryFiles(ctx, sessionID, drivers, cars, map[string][]posSample{}, timing, laps); err != nil {
+		t.Fatalf("writeTelemetryFiles: %v", err)
+	}
+
+	row := mustLoadTelemetryRow(t, ctx, st, year, round, sessionType, "AAA", 2)
+	speed := toFloatSlice(row["speed"])
+	gear := toIntSlice(row["gear"])
+	if len(speed) == 0 || len(gear) == 0 {
+		t.Fatalf("expected speed and gear telemetry arrays, got speed=%d gear=%d", len(speed), len(gear))
+	}
+	maxSpeed := 0.0
+	for _, v := range speed {
+		if v > maxSpeed {
+			maxSpeed = v
+		}
+	}
+	if maxSpeed < 250 {
+		t.Fatalf("expected high-speed best-lap telemetry from window, got max speed %.1f", maxSpeed)
+	}
+	minGear := math.MaxInt32
+	for _, g := range gear {
+		if g < minGear {
+			minGear = g
+		}
+	}
+	if minGear <= 1 {
+		t.Fatalf("expected window telemetry gears, got suspicious minimum gear %d", minGear)
+	}
+}
+
+func TestWriteTelemetryFilesFallsBackToLapAtWhenLapWindowsUnusable(t *testing.T) {
+	dir := t.TempDir()
+	st := newTestStore(t, dir)
+	defer st.Close()
+	ctx := context.Background()
+
+	const year, round = 2026, 78
+	const sessionType = "Q"
+	sessionID, err := st.UpsertSessionInfo(ctx, year, round, sessionType, map[string]any{
+		"event_name": "Fallback GP",
+		"circuit":    "Test Circuit",
+		"country":    "Test",
+		"drivers": []any{
+			map[string]any{
+				"abbreviation":  "AAA",
+				"driver_number": "1",
+				"full_name":     "Driver A",
+				"team_name":     "Team A",
+				"team_color":    "#FFFFFF",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert session info: %v", err)
+	}
+
+	p := &GoSessionProcessor{
+		store:                 st,
+		telemetryChunkSamples: 512,
+		telemetryChunkCodec:   storage.CodecProtobuf,
+	}
+	drivers := []driverMeta{{Number: "1", Abbr: "AAA", Team: "Team A", Color: "#FFFFFF"}}
+	timing := map[string][]timingState{
+		"1": {
+			{T: 0, Lap: 1},
+			{T: 10, Lap: 2},
+			{T: 20, Lap: 3},
+		},
+	}
+	cars := map[string][]carSample{
+		"1": {
+			{T: 11, Speed: 210, Throttle: 95, Brake: false, Gear: 7, RPM: 11200, DRS: 10},
+			{T: 13, Speed: 220, Throttle: 98, Brake: false, Gear: 8, RPM: 11800, DRS: 12},
+		},
+	}
+	// Unusable window (no overlap with sample timestamps) should trigger lapAt fallback.
+	laps := []map[string]any{
+		{
+			"driver":     "AAA",
+			"lap_number": 2,
+			"lap_time":   "0:10.000",
+			"time":       200.0,
+		},
+	}
+
+	if err := p.writeTelemetryFiles(ctx, sessionID, drivers, cars, map[string][]posSample{}, timing, laps); err != nil {
+		t.Fatalf("writeTelemetryFiles: %v", err)
+	}
+
+	row := mustLoadTelemetryRow(t, ctx, st, year, round, sessionType, "AAA", 2)
+	speed := toFloatSlice(row["speed"])
+	gear := toIntSlice(row["gear"])
+	if len(speed) == 0 || len(gear) == 0 {
+		t.Fatalf("expected fallback telemetry arrays, got speed=%d gear=%d", len(speed), len(gear))
+	}
+	if speed[0] < 200 {
+		t.Fatalf("expected lapAt fallback speed >= 200, got %.1f", speed[0])
+	}
+	if gear[0] < 7 {
+		t.Fatalf("expected lapAt fallback high gear, got %d", gear[0])
+	}
+}
+
+func TestQ3BestLapWindowIsExposedAndTelemetryAligns(t *testing.T) {
+	drivers := []driverMeta{
+		{Number: "4", Abbr: "NOR", Team: "McLaren", Color: "FF8000"},
+	}
+	byNum := map[string]driverMeta{
+		"4": drivers[0],
+	}
+	laps := []map[string]any{
+		{
+			"driver":           "NOR",
+			"lap_number":       1,
+			"lap_time":         "0:12.000",
+			"time":             12.0,
+			"qualifying_phase": "Q3",
+			"sector1":          "4.000",
+			"sector2":          "4.000",
+			"sector3":          "4.000",
+		},
+		{
+			"driver":           "NOR",
+			"lap_number":       2,
+			"lap_time":         "0:10.000",
+			"time":             22.0,
+			"qualifying_phase": "Q3",
+			"sector1":          "3.400",
+			"sector2":          "3.300",
+			"sector3":          "3.300",
+		},
+	}
+
+	buildLap := func(startT, endT float64) []posSample {
+		out := make([]posSample, 0, 180)
+		total := 180
+		for i := 0; i < total; i++ {
+			ratio := float64(i) / float64(total-1)
+			theta := ratio * 2 * math.Pi
+			out = append(out, posSample{
+				T: startT + ratio*(endT-startT),
+				X: math.Cos(theta),
+				Y: math.Sin(theta),
+			})
+		}
+		return out
+	}
+
+	pos := map[string][]posSample{
+		"4": buildLap(12.0, 22.0),
+	}
+	timingForQ3 := map[string][]timingState{
+		"4": {
+			{T: 12.0, Lap: 1},
+			{T: 22.0, Lap: 2},
+		},
+	}
+	track := map[string]any{
+		"norm": map[string]any{
+			"x_min": 0.0,
+			"y_min": 0.0,
+			"scale": 1.0,
+		},
+	}
+
+	out := buildQ3LinesJSON(drivers, byNum, laps, pos, timingForQ3, track)
+	if out == nil {
+		t.Fatalf("expected q3 lines output")
+	}
+	rows, ok := out["drivers"].([]map[string]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("expected one q3 line row, got %#v", out["drivers"])
+	}
+	row := rows[0]
+	if asInt(row["lap_number"]) != 2 {
+		t.Fatalf("expected Q3 best lap number 2, got %v", row["lap_number"])
+	}
+	if math.Abs(asFloat(row["lap_start_ts"], -1)-12.0) > 1e-6 {
+		t.Fatalf("expected lap_start_ts=12.0, got %v", row["lap_start_ts"])
+	}
+	if math.Abs(asFloat(row["lap_end_ts"], -1)-22.0) > 1e-6 {
+		t.Fatalf("expected lap_end_ts=22.0, got %v", row["lap_end_ts"])
+	}
+
+	dir := t.TempDir()
+	st := newTestStore(t, dir)
+	defer st.Close()
+	ctx := context.Background()
+	const year, round = 2026, 79
+	const sessionType = "Q"
+	sessionID, err := st.UpsertSessionInfo(ctx, year, round, sessionType, map[string]any{
+		"event_name": "Q3 Alignment GP",
+		"circuit":    "Test Circuit",
+		"country":    "Test",
+		"drivers": []any{
+			map[string]any{
+				"abbreviation":  "NOR",
+				"driver_number": "4",
+				"full_name":     "Lando Norris",
+				"team_name":     "McLaren",
+				"team_color":    "#FF8000",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert session info: %v", err)
+	}
+
+	p := &GoSessionProcessor{
+		store:                 st,
+		telemetryChunkSamples: 512,
+		telemetryChunkCodec:   storage.CodecProtobuf,
+	}
+	// Deliberately misaligned timeline where lapAt would classify the true best-lap window as lap 1.
+	timingForTelemetry := map[string][]timingState{
+		"4": {
+			{T: 0, Lap: 1},
+			{T: 40, Lap: 2},
+			{T: 80, Lap: 3},
+		},
+	}
+	cars := map[string][]carSample{
+		"4": {
+			// Best-lap window [12,22]
+			{T: 13, Speed: 286, Throttle: 99, Brake: false, Gear: 8, RPM: 11800, DRS: 12},
+			{T: 16, Speed: 294, Throttle: 100, Brake: false, Gear: 8, RPM: 12100, DRS: 12},
+			{T: 20, Speed: 281, Throttle: 97, Brake: false, Gear: 7, RPM: 11600, DRS: 10},
+			// Adjacent lap sample that should not replace best-lap telemetry
+			{T: 46, Speed: 88, Throttle: 28, Brake: true, Gear: 0, RPM: 6200, DRS: 0},
+		},
+	}
+
+	if err := p.writeTelemetryFiles(ctx, sessionID, drivers, cars, map[string][]posSample{}, timingForTelemetry, laps); err != nil {
+		t.Fatalf("writeTelemetryFiles: %v", err)
+	}
+	telemetry := mustLoadTelemetryRow(t, ctx, st, year, round, sessionType, "NOR", asInt(row["lap_number"]))
+	speed := toFloatSlice(telemetry["speed"])
+	gear := toIntSlice(telemetry["gear"])
+	if len(speed) == 0 || len(gear) == 0 {
+		t.Fatalf("expected telemetry arrays for Q3 best lap")
+	}
+	maxSpeed := 0.0
+	for _, v := range speed {
+		if v > maxSpeed {
+			maxSpeed = v
+		}
+	}
+	if maxSpeed < 250 {
+		t.Fatalf("expected high-speed Q3 best-lap telemetry, got max speed %.1f", maxSpeed)
+	}
+	minGear := math.MaxInt32
+	for _, g := range gear {
+		if g < minGear {
+			minGear = g
+		}
+	}
+	if minGear <= 1 {
+		t.Fatalf("expected no pit/neutral-heavy best-lap telemetry, got minimum gear %d", minGear)
+	}
+}
+
 func TestReplayWriterAndIndexOffsets(t *testing.T) {
 	dir := t.TempDir()
 	replayPath := filepath.Join(dir, "replay.json")
@@ -1430,4 +1750,49 @@ func newTestStore(t *testing.T, dir string) *storage.Store {
 		t.Fatalf("open sqlite store: %v", err)
 	}
 	return st
+}
+
+func mustLoadTelemetryRow(t *testing.T, ctx context.Context, st *storage.Store, year, round int, sessionType, driver string, lap int) map[string]any {
+	t.Helper()
+	payload, codec, err := st.GetTelemetryPayload(ctx, year, round, sessionType, driver, lap)
+	if err != nil {
+		t.Fatalf("get telemetry payload for %s lap %d: %v", driver, lap, err)
+	}
+	decoded, err := storage.DecodeTelemetryChunk(payload, codec)
+	if err != nil {
+		t.Fatalf("decode telemetry payload for %s lap %d: %v", driver, lap, err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(decoded.PayloadJson, &out); err != nil {
+		t.Fatalf("unmarshal telemetry json for %s lap %d: %v", driver, lap, err)
+	}
+	return out
+}
+
+func toFloatSlice(v any) []float64 {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]float64, 0, len(arr))
+	for _, item := range arr {
+		if f, ok := item.(float64); ok {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func toIntSlice(v any) []int {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]int, 0, len(arr))
+	for _, item := range arr {
+		if f, ok := item.(float64); ok {
+			out = append(out, int(math.Round(f)))
+		}
+	}
+	return out
 }

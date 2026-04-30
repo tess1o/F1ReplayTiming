@@ -18,7 +18,8 @@ var (
 		"FP2": "Practice 2",
 		"FP3": "Practice 3",
 	}
-	availableSeasons = []int{2024, 2025, 2026, 2027, 2028}
+	availableSeasons                     = []int{2024, 2025, 2026, 2027, 2028}
+	scheduleRefreshIntervalCurrentSeason = 30 * time.Minute
 )
 
 type app struct {
@@ -36,6 +37,7 @@ type app struct {
 	sessionLocks    map[string]*sync.Mutex
 	scheduleLockMu  sync.Mutex
 	scheduleLocks   map[int]*sync.Mutex
+	scheduleRefresh map[int]time.Time
 	pitLossMu       sync.Mutex
 	pitLossRaw      map[string]any
 	pitLossLoadedAt time.Time

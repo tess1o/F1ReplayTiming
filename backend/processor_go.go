@@ -14,11 +14,17 @@ import (
 )
 
 const defaultF1StaticBase = "https://livetiming.formula1.com/static"
+const defaultF1EditorialBase = "https://api.formula1.com"
+const defaultF1EditorialAPIKey = "BQ1SiSmLUOsp460VzXBlLrh689kGgYEZ"
+const defaultF1EditorialLocale = "en"
 
 type GoSessionProcessor struct {
 	dataDir               string
 	store                 *storage.Store
 	baseURL               string
+	editorialBaseURL      string
+	editorialAPIKey       string
+	editorialLocale       string
 	httpClient            *http.Client
 	sampleEvery           float64
 	replayInterpMaxGap    float64
@@ -222,11 +228,26 @@ func NewGoSessionProcessor(dataDir string, store *storage.Store, replayChunkFram
 	if chunkCodec != storage.CodecProtobuf && chunkCodec != storage.CodecProtobufZstd {
 		chunkCodec = storage.CodecProtobuf
 	}
+	editorialBaseURL := strings.TrimSpace(os.Getenv("F1_EDITORIAL_BASE_URL"))
+	if editorialBaseURL == "" {
+		editorialBaseURL = defaultF1EditorialBase
+	}
+	editorialAPIKey := strings.TrimSpace(os.Getenv("F1_EDITORIAL_API_KEY"))
+	if editorialAPIKey == "" {
+		editorialAPIKey = defaultF1EditorialAPIKey
+	}
+	editorialLocale := strings.TrimSpace(os.Getenv("F1_EDITORIAL_LOCALE"))
+	if editorialLocale == "" {
+		editorialLocale = defaultF1EditorialLocale
+	}
 
 	return &GoSessionProcessor{
-		dataDir: dataDir,
-		store:   store,
-		baseURL: strings.TrimRight(baseURL, "/"),
+		dataDir:          dataDir,
+		store:            store,
+		baseURL:          strings.TrimRight(baseURL, "/"),
+		editorialBaseURL: strings.TrimRight(editorialBaseURL, "/"),
+		editorialAPIKey:  editorialAPIKey,
+		editorialLocale:  editorialLocale,
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},

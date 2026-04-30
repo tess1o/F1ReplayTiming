@@ -13,7 +13,9 @@ import (
 )
 
 func (a *app) ensureSchedule(year int) error {
-	if a.fileExists(filepath.Join("seasons", strconv.Itoa(year), "schedule.json")) {
+	path := filepath.Join("seasons", strconv.Itoa(year), "schedule.json")
+	forceRefresh := a.shouldForceScheduleRefresh(year)
+	if a.fileExists(path) && !forceRefresh {
 		return nil
 	}
 
@@ -28,7 +30,7 @@ func (a *app) ensureSchedule(year int) error {
 	lock.Lock()
 	defer lock.Unlock()
 
-	if a.fileExists(filepath.Join("seasons", strconv.Itoa(year), "schedule.json")) {
+	if a.fileExists(path) && !forceRefresh {
 		return nil
 	}
 
@@ -36,6 +38,21 @@ func (a *app) ensureSchedule(year int) error {
 		return errors.New("session processor is not initialized")
 	}
 	return a.processor.EnsureSchedule(context.Background(), year)
+}
+
+func (a *app) shouldForceScheduleRefresh(year int) bool {
+	now := time.Now().UTC()
+	if year != now.Year() {
+		return false
+	}
+	a.scheduleLockMu.Lock()
+	defer a.scheduleLockMu.Unlock()
+	last := a.scheduleRefresh[year]
+	if !last.IsZero() && now.Sub(last) < scheduleRefreshIntervalCurrentSeason {
+		return false
+	}
+	a.scheduleRefresh[year] = now
+	return true
 }
 
 func (a *app) ensureSessionData(year, round int, sessionType string, onStatus func(string)) error {

@@ -11,24 +11,138 @@ import (
 	"f1replaytiming/backend/storage"
 )
 
-func (p *GoSessionProcessor) writeTelemetryFiles(ctx context.Context, sessionID int64, drivers []driverMeta, cars map[string][]carSample, pos map[string][]posSample, timing map[string][]timingState) error {
+type telemetryLapWindow struct {
+	Start float64
+	End   float64
+}
+
+func buildTelemetryLapWindowsByAbbr(laps []map[string]any) map[string]map[int]telemetryLapWindow {
+	out := make(map[string]map[int]telemetryLapWindow, len(laps))
+	for _, lap := range laps {
+		abbr := strings.ToUpper(strings.TrimSpace(asString(lap["driver"])))
+		if abbr == "" {
+			continue
+		}
+		lapNum := asInt(lap["lap_number"])
+		if lapNum <= 0 {
+			continue
+		}
+		end := asFloat(lap["time"], 0)
+		if end <= 0 {
+			continue
+		}
+		lapSeconds, ok := parseLapTimeToSeconds(asString(lap["lap_time"]))
+		if !ok || lapSeconds <= 0 {
+			continue
+		}
+		start := end - lapSeconds
+		if !isFinite(start) || !isFinite(end) || start >= end {
+			continue
+		}
+		byLap := out[abbr]
+		if byLap == nil {
+			byLap = make(map[int]telemetryLapWindow)
+			out[abbr] = byLap
+		}
+		byLap[lapNum] = telemetryLapWindow{Start: start, End: end}
+	}
+	return out
+}
+
+func bucketTelemetryByLapNumber(samples []carSample, tl []timingState) map[int][]carSample {
+	byLap := map[int][]carSample{}
+	for _, s := range samples {
+		lap := lapAt(tl, s.T)
+		if lap <= 0 {
+			continue
+		}
+		byLap[lap] = append(byLap[lap], s)
+	}
+	return byLap
+}
+
+func bucketTelemetryByLapWindow(samples []carSample, windowsByLap map[int]telemetryLapWindow) map[int][]carSample {
+	if len(windowsByLap) == 0 || len(samples) == 0 {
+		return map[int][]carSample{}
+	}
+	laps := make([]int, 0, len(windowsByLap))
+	for lap := range windowsByLap {
+		laps = append(laps, lap)
+	}
+	sort.Ints(laps)
+
+	out := map[int][]carSample{}
+	for _, s := range samples {
+		matched := 0
+		// Prefer strict lap window boundaries so boundary samples belong to the lap that just ended.
+		for _, lap := range laps {
+			w := windowsByLap[lap]
+			if s.T > w.Start && s.T <= w.End {
+				matched = lap
+				break
+			}
+		}
+		// Small tolerance for rounding/jitter in stream timestamps.
+		if matched == 0 {
+			for _, lap := range laps {
+				w := windowsByLap[lap]
+				if s.T >= w.Start-1e-3 && s.T <= w.End+1e-3 {
+					matched = lap
+					break
+				}
+			}
+		}
+		if matched > 0 {
+			out[matched] = append(out[matched], s)
+		}
+	}
+	return out
+}
+
+func (p *GoSessionProcessor) writeTelemetryFiles(ctx context.Context, sessionID int64, drivers []driverMeta, cars map[string][]carSample, pos map[string][]posSample, timing map[string][]timingState, laps []map[string]any) error {
 	tw, err := p.store.BeginTelemetryWrite(ctx, sessionID)
 	if err != nil {
 		return err
 	}
 	defer tw.Rollback()
+	windowsByAbbr := buildTelemetryLapWindowsByAbbr(laps)
 	for _, d := range drivers {
 		samples := cars[d.Number]
 		if len(samples) == 0 {
 			continue
 		}
-		byLap := map[int][]carSample{}
-		for _, s := range samples {
-			lap := lapAt(timing[d.Number], s.T)
-			if lap <= 0 {
-				continue
+		windows := windowsByAbbr[d.Abbr]
+		var byLap map[int][]carSample
+		if len(windows) == 0 {
+			byLap = bucketTelemetryByLapNumber(samples, timing[d.Number])
+		} else {
+			// Primary strategy: strict lap windows from laps.json.
+			byLap = bucketTelemetryByLapWindow(samples, windows)
+
+			// Fallback strategy: use lapAt only for laps where window data is unavailable/unusable.
+			needFallback := make(map[int]struct{}, len(windows))
+			for lap := range windows {
+				if len(byLap[lap]) == 0 {
+					needFallback[lap] = struct{}{}
+				}
 			}
-			byLap[lap] = append(byLap[lap], s)
+
+			for _, s := range samples {
+				lap := lapAt(timing[d.Number], s.T)
+				if lap <= 0 {
+					continue
+				}
+				if _, hasWindow := windows[lap]; !hasWindow {
+					// Window unavailable for this lap: keep lapAt fallback.
+					byLap[lap] = append(byLap[lap], s)
+					continue
+				}
+				if _, ok := needFallback[lap]; !ok {
+					continue
+				}
+				// Window exists but produced no usable samples: fall back to lapAt.
+				byLap[lap] = append(byLap[lap], s)
+			}
 		}
 		if len(byLap) == 0 {
 			continue
