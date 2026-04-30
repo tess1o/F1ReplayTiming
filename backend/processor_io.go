@@ -11,11 +11,14 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -202,22 +205,44 @@ func (p *GoSessionProcessor) doRequest(ctx context.Context, url string) (*http.R
 }
 
 func (p *GoSessionProcessor) doRequestWithHeaders(ctx context.Context, url string, headers map[string]string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := doRequestWithClient(ctx, url, headers, p.httpClient)
 	if err != nil {
 		return nil, err
 	}
-	applyDefaultRequestHeaders(req)
-	applyRequestHeaders(req, headers)
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, err
+	if isLiveTimingURL(url) && resp.StatusCode == http.StatusForbidden {
+		bodyPrimary, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+
+		log.Printf("processor(go): livetiming returned 403, retrying with ipv4 transport url=%s", url)
+		fallbackClient := newIPv4HTTPClient(p.httpClient)
+		respFallback, errFallback := doRequestWithClient(ctx, url, headers, fallbackClient)
+		if errFallback != nil {
+			return nil, fmt.Errorf("http %s -> 403: %s (fallback request failed: %v)", url, strings.TrimSpace(string(bodyPrimary)), errFallback)
+		}
+		if respFallback.StatusCode >= 200 && respFallback.StatusCode < 300 {
+			return respFallback, nil
+		}
+		bodyFallback, _ := io.ReadAll(io.LimitReader(respFallback.Body, 4096))
+		_ = respFallback.Body.Close()
+		return nil, fmt.Errorf("http %s -> 403: %s (fallback -> %d: %s)", url, strings.TrimSpace(string(bodyPrimary)), respFallback.StatusCode, strings.TrimSpace(string(bodyFallback)))
 	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("http %s -> %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return resp, nil
+}
+
+func doRequestWithClient(ctx context.Context, url string, headers map[string]string, client *http.Client) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	applyDefaultRequestHeaders(req)
+	applyRequestHeaders(req, headers)
+	return client.Do(req)
 }
 
 func applyDefaultRequestHeaders(req *http.Request) {
@@ -235,6 +260,36 @@ func applyRequestHeaders(req *http.Request, headers map[string]string) {
 			continue
 		}
 		req.Header.Set(k, v)
+	}
+}
+
+func isLiveTimingURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return strings.Contains(strings.ToLower(raw), "livetiming.formula1.com")
+	}
+	return strings.EqualFold(parsed.Hostname(), "livetiming.formula1.com")
+}
+
+func newIPv4HTTPClient(base *http.Client) *http.Client {
+	timeout := 120 * time.Second
+	if base != nil && base.Timeout > 0 {
+		timeout = base.Timeout
+	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ForceAttemptHTTP2 = false
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	transport.DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp4", addr)
+	}
+
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
 	}
 }
 
