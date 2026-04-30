@@ -232,12 +232,8 @@ func (p *GoSessionProcessor) fetchEditorialEventListing(ctx context.Context, yea
 	q := url.Values{}
 	q.Set("season", strconv.Itoa(year))
 	endpoint := fmt.Sprintf("%s/v1/editorial-eventlisting/events?%s", p.editorialBaseURL, q.Encode())
-	headers := map[string]string{
-		"apikey": p.editorialAPIKey,
-		"locale": defaultString(p.editorialLocale, defaultF1EditorialLocale),
-	}
 	var out editorialEventListing
-	if err := p.fetchJSONWithHeaders(ctx, endpoint, headers, &out); err != nil {
+	if err := p.fetchJSONWithHeaders(ctx, endpoint, p.editorialHeaders(), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -247,12 +243,8 @@ func (p *GoSessionProcessor) fetchEditorialRaceEvent(ctx context.Context, meetin
 	q := url.Values{}
 	q.Set("meeting", strconv.Itoa(meetingID))
 	endpoint := fmt.Sprintf("%s/v1/editorial-assemblies/races?%s", p.editorialBaseURL, q.Encode())
-	headers := map[string]string{
-		"apikey": p.editorialAPIKey,
-		"locale": defaultString(p.editorialLocale, defaultF1EditorialLocale),
-	}
 	var envelope editorialRaceEnvelope
-	if err := p.fetchJSONWithHeaders(ctx, endpoint, headers, &envelope); err != nil {
+	if err := p.fetchJSONWithHeaders(ctx, endpoint, p.editorialHeaders(), &envelope); err != nil {
 		return nil, err
 	}
 
@@ -296,6 +288,13 @@ func (p *GoSessionProcessor) fetchEditorialRaceEvent(ctx context.Context, meetin
 		"sessions":     sessions,
 		"status":       "future",
 	}, nil
+}
+
+func (p *GoSessionProcessor) editorialHeaders() map[string]string {
+	return map[string]string{
+		"apikey": p.editorialAPIKey,
+		"locale": defaultString(p.editorialLocale, defaultF1EditorialLocale),
+	}
 }
 
 func parseRoundText(raw string) int {

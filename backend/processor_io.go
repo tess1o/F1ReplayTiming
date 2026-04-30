@@ -18,6 +18,13 @@ import (
 	"strings"
 )
 
+const (
+	defaultBrowserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+	defaultBrowserAccept    = "application/json,text/plain,*/*"
+	defaultBrowserLanguage  = "en-US,en;q=0.9"
+	defaultBrowserReferer   = "https://www.formula1.com/"
+)
+
 func newReplayWriter(absPath string) (*replayWriter, error) {
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		return nil, err
@@ -199,12 +206,8 @@ func (p *GoSessionProcessor) doRequestWithHeaders(ctx context.Context, url strin
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range headers {
-		if strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
-			continue
-		}
-		req.Header.Set(k, v)
-	}
+	applyDefaultRequestHeaders(req)
+	applyRequestHeaders(req, headers)
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -215,6 +218,24 @@ func (p *GoSessionProcessor) doRequestWithHeaders(ctx context.Context, url strin
 		return nil, fmt.Errorf("http %s -> %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return resp, nil
+}
+
+func applyDefaultRequestHeaders(req *http.Request) {
+	// Some upstream endpoints (notably livetiming.formula1.com behind CloudFront)
+	// can block requests that look like non-browser traffic.
+	req.Header.Set("User-Agent", defaultBrowserUserAgent)
+	req.Header.Set("Accept", defaultBrowserAccept)
+	req.Header.Set("Accept-Language", defaultBrowserLanguage)
+	req.Header.Set("Referer", defaultBrowserReferer)
+}
+
+func applyRequestHeaders(req *http.Request, headers map[string]string) {
+	for k, v := range headers {
+		if strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
 }
 
 func parseStreamTimestamp(raw string) (float64, bool) {
