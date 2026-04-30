@@ -26,15 +26,31 @@ func (p *GoSessionProcessor) ProcessSession(ctx context.Context, year, round int
 	sessionType = strings.ToUpper(strings.TrimSpace(sessionType))
 	isQualifying := sessionType == "Q" || sessionType == "SQ"
 	status("Fetching season index...")
-	idx, err := p.fetchSeasonIndex(ctx, year)
-	if err != nil {
-		return err
+	idx, seasonErr := p.fetchSeasonIndex(ctx, year)
+	var meeting *seasonMeeting
+	sessionPath := ""
+	if seasonErr == nil {
+		var sess *meetingSession
+		var findErr error
+		meeting, sess, findErr = p.findMeetingSession(idx, round, sessionType)
+		if findErr == nil {
+			sessionPath = strings.Trim(sess.Path, "/")
+		}
 	}
-	meeting, sess, err := p.findMeetingSession(idx, round, sessionType)
-	if err != nil {
-		return err
+	if sessionPath == "" {
+		status("Season index unavailable, trying schedule-derived session path fallback...")
+		var fallbackErr error
+		meeting, sessionPath, fallbackErr = p.resolveMeetingSessionPathFromSchedule(ctx, year, round, sessionType)
+		if fallbackErr != nil && seasonErr != nil {
+			return fmt.Errorf("fetch season index: %w; fallback failed: %v", seasonErr, fallbackErr)
+		}
+		if fallbackErr != nil {
+			return fallbackErr
+		}
 	}
-	sessionPath := strings.Trim(sess.Path, "/")
+	if meeting == nil {
+		return errors.New("meeting context is unavailable")
+	}
 	baseOut := filepath.Join("sessions", strconv.Itoa(year), strconv.Itoa(round), sessionType)
 
 	status("Fetching session feed manifest...")

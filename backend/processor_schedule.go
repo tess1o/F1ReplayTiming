@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 func (p *GoSessionProcessor) EnsureSchedule(ctx context.Context, year int) error {
@@ -486,6 +487,181 @@ func (p *GoSessionProcessor) fetchSessionIndex(ctx context.Context, sessionPath 
 		return nil, err
 	}
 	return &out, nil
+}
+
+func (p *GoSessionProcessor) resolveMeetingSessionPathFromSchedule(ctx context.Context, year, round int, sessionType string) (*seasonMeeting, string, error) {
+	if p.store == nil {
+		return nil, "", errors.New("sqlite store is not configured")
+	}
+	raw, err := p.store.GetJSONArtifact(ctx, filepath.ToSlash(filepath.Join("seasons", strconv.Itoa(year), "schedule.json")))
+	if err != nil {
+		return nil, "", fmt.Errorf("load schedule: %w", err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil, "", fmt.Errorf("parse schedule: %w", err)
+	}
+
+	events, _ := root["events"].([]any)
+	var event map[string]any
+	for _, item := range events {
+		evt, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if asInt(evt["round_number"]) == round {
+			event = evt
+			break
+		}
+	}
+	if event == nil {
+		return nil, "", fmt.Errorf("round %d not found in schedule", round)
+	}
+
+	meeting := &seasonMeeting{
+		Number:   round,
+		Name:     asString(event["event_name"]),
+		Location: asString(event["location"]),
+		Country:  meetingCountry{Name: asString(event["country"])},
+	}
+	sessions := sessionMapsFromEvent(event)
+	if len(sessions) == 0 {
+		return nil, "", fmt.Errorf("round %d has no sessions in schedule", round)
+	}
+
+	target := scheduleSessionByType(sessions, sessionType)
+	if target == nil {
+		return nil, "", fmt.Errorf("round %d type %s missing in schedule", round, sessionType)
+	}
+	targetDate, ok := scheduleSessionDate(target)
+	if !ok {
+		return nil, "", fmt.Errorf("round %d type %s has no usable date", round, sessionType)
+	}
+
+	meetingDate := targetDate
+	if race := scheduleSessionByType(sessions, "R"); race != nil {
+		if d, ok := scheduleSessionDate(race); ok {
+			meetingDate = d
+		}
+	}
+
+	eventName := asString(event["event_name"])
+	if strings.TrimSpace(eventName) == "" {
+		eventName = fmt.Sprintf("Round_%d", round)
+	}
+	meetingSlug := staticPathSlug(eventName)
+	if meetingSlug == "" {
+		meetingSlug = fmt.Sprintf("Round_%d", round)
+	}
+
+	sessionNameCandidates := staticSessionPathNames(sessionType, asString(target["name"]))
+	candidates := make([]string, 0, len(sessionNameCandidates))
+	for _, sname := range sessionNameCandidates {
+		if strings.TrimSpace(sname) == "" {
+			continue
+		}
+		sessionSlug := staticPathSlug(sname)
+		if sessionSlug == "" {
+			continue
+		}
+		path := fmt.Sprintf("%d/%s_%s/%s_%s/", year, meetingDate.Format("2006-01-02"), meetingSlug, targetDate.Format("2006-01-02"), sessionSlug)
+		candidates = append(candidates, path)
+	}
+	if len(candidates) == 0 {
+		return nil, "", fmt.Errorf("no static path candidates for round %d type %s", round, sessionType)
+	}
+
+	var lastErr error
+	for _, candidate := range candidates {
+		if _, err := p.fetchSessionIndex(ctx, candidate); err == nil {
+			log.Printf("processor(go): schedule fallback resolved session path year=%d round=%d type=%s path=%s", year, round, sessionType, candidate)
+			return meeting, strings.Trim(candidate, "/"), nil
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return nil, "", fmt.Errorf("schedule fallback candidates failed (%d): %w", len(candidates), lastErr)
+	}
+	return nil, "", fmt.Errorf("schedule fallback candidates failed (%d)", len(candidates))
+}
+
+func scheduleSessionByType(sessions []map[string]any, sessionType string) map[string]any {
+	want := normalizeSessionType(sessionType)
+	for _, s := range sessions {
+		typ := normalizeSessionType(asString(s["session_type"]))
+		if typ == "" {
+			typ = normalizeSessionType(sessionNameToType[asString(s["name"])])
+		}
+		if typ == want {
+			return s
+		}
+	}
+	return nil
+}
+
+func scheduleSessionDate(session map[string]any) (time.Time, bool) {
+	if session == nil {
+		return time.Time{}, false
+	}
+	return parseDateMaybe(asString(session["date_utc"]))
+}
+
+func staticSessionPathNames(sessionType string, sessionName string) []string {
+	normalized := normalizeSessionType(sessionType)
+	switch normalized {
+	case "R":
+		return []string{"Race"}
+	case "Q":
+		return []string{"Qualifying"}
+	case "S":
+		return []string{"Sprint"}
+	case "SQ":
+		return []string{"Sprint Qualifying", "Sprint Shootout"}
+	case "FP1":
+		return []string{"Practice 1"}
+	case "FP2":
+		return []string{"Practice 2"}
+	case "FP3":
+		return []string{"Practice 3"}
+	}
+	if strings.TrimSpace(sessionName) != "" {
+		return []string{sessionName}
+	}
+	if strings.TrimSpace(sessionType) != "" {
+		return []string{sessionType}
+	}
+	return nil
+}
+
+func staticPathSlug(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	prevUnderscore := false
+	for _, r := range s {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+			prevUnderscore = false
+		case r == ' ' || r == '-' || r == '/' || r == '.':
+			if !prevUnderscore {
+				b.WriteRune('_')
+				prevUnderscore = true
+			}
+		case r == '\'' || r == '"' || r == '`':
+			// Skip punctuation that typically does not appear in static paths.
+		default:
+			if !prevUnderscore {
+				b.WriteRune('_')
+				prevUnderscore = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }
 
 func (p *GoSessionProcessor) fetchFeedKeyframeJSON(ctx context.Context, sessionPath string, feed sessionFeed) (map[string]any, error) {
