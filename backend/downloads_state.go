@@ -97,6 +97,7 @@ func (m *downloadManager) persistLocked() {
 func (m *downloadManager) enqueue(keys []sessionKey, source string) enqueueCounts {
 	res := enqueueCounts{}
 	seenInput := make(map[string]struct{})
+	queuedKeys := make([]string, 0, len(keys))
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -136,6 +137,7 @@ func (m *downloadManager) enqueue(keys []sessionKey, source string) enqueueCount
 			Source:      source,
 		}
 		m.queue = append(m.queue, job)
+		queuedKeys = append(queuedKeys, key.String())
 		res.Enqueued++
 	}
 
@@ -143,6 +145,8 @@ func (m *downloadManager) enqueue(keys []sessionKey, source string) enqueueCount
 		m.persistLocked()
 		m.cond.Broadcast()
 	}
+	log.Printf("downloads: enqueue source=%s requested=%d queued=%d already_present=%d already_downloaded=%d keys=%s",
+		source, len(seenInput), res.Enqueued, res.AlreadyPresent, res.AlreadyDownloaded, strings.Join(queuedKeys, ","))
 	return res
 }
 

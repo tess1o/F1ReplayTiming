@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -66,8 +67,12 @@ func (m *downloadManager) loop() {
 }
 
 func (m *downloadManager) processActiveJob(job *downloadJob) {
+	log.Printf("downloads: worker start job=%s year=%d round=%d type=%s max_attempts=%d timeout=%s",
+		job.ID, job.Year, job.Round, job.SessionType, job.MaxAttempts, m.timeout)
 	for attempt := 1; attempt <= job.MaxAttempts; attempt++ {
 		m.setActiveAttempt(job.ID, attempt)
+		log.Printf("downloads: worker attempt job=%s year=%d round=%d type=%s attempt=%d/%d",
+			job.ID, job.Year, job.Round, job.SessionType, attempt, job.MaxAttempts)
 		ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
 		err := m.app.runProcessSessionWorker(ctx, job.Year, job.Round, job.SessionType, func(msg string) {
 			m.setActiveMessage(job.ID, msg, false)
@@ -75,18 +80,25 @@ func (m *downloadManager) processActiveJob(job *downloadJob) {
 		cancel()
 
 		if err == nil {
+			log.Printf("downloads: worker success job=%s year=%d round=%d type=%s attempt=%d",
+				job.ID, job.Year, job.Round, job.SessionType, attempt)
 			m.finishActiveSuccess(job.ID)
 			return
 		}
+		log.Printf("downloads: worker failure job=%s year=%d round=%d type=%s attempt=%d err=%v",
+			job.ID, job.Year, job.Round, job.SessionType, attempt, err)
 
 		timedOut := errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "deadline exceeded")
 		if isRetryableJobError(err, timedOut) && attempt < job.MaxAttempts {
 			backoff := m.retryBase * time.Duration(1<<(attempt-1))
+			log.Printf("downloads: worker retry scheduled job=%s year=%d round=%d type=%s backoff=%s",
+				job.ID, job.Year, job.Round, job.SessionType, backoff.Round(time.Second))
 			m.setActiveRetry(job.ID, err.Error(), backoff)
 			time.Sleep(backoff)
 			continue
 		}
 
+		log.Printf("downloads: worker giving up job=%s year=%d round=%d type=%s err=%v", job.ID, job.Year, job.Round, job.SessionType, err)
 		m.finishActiveFailure(job.ID, err.Error())
 		return
 	}

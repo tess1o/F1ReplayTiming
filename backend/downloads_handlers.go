@@ -51,20 +51,26 @@ func (a *app) handleDownloadEnqueue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"detail": "year is required"})
 		return
 	}
+	log.Printf("downloads: enqueue request mode=%s year=%d round=%d session_type=%s", req.Mode, req.Year, req.Round, strings.ToUpper(strings.TrimSpace(req.SessionType)))
 
 	events, err := a.loadScheduleEvents(req.Year)
 	if err != nil {
+		log.Printf("downloads: enqueue schedule unavailable year=%d err=%v", req.Year, err)
 		writeJSON(w, http.StatusNotFound, map[string]any{"detail": err.Error()})
 		return
 	}
 
 	targets, counts, err := collectTargetsForMode(req, events)
 	if err != nil {
+		log.Printf("downloads: enqueue target selection failed mode=%s year=%d round=%d session_type=%s err=%v", req.Mode, req.Year, req.Round, strings.ToUpper(strings.TrimSpace(req.SessionType)), err)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
 		return
 	}
+	log.Printf("downloads: enqueue target selection mode=%s year=%d requested_round=%d requested_type=%s targets=%d skipped_future=%d",
+		req.Mode, req.Year, req.Round, strings.ToUpper(strings.TrimSpace(req.SessionType)), len(targets), counts.SkippedFuture)
 
 	if len(targets) == 0 && counts.SkippedFuture == 0 {
+		log.Printf("downloads: enqueue no-op mode=%s year=%d round=%d session_type=%s", req.Mode, req.Year, req.Round, strings.ToUpper(strings.TrimSpace(req.SessionType)))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"mode":   req.Mode,
 			"counts": counts,
@@ -76,6 +82,9 @@ func (a *app) handleDownloadEnqueue(w http.ResponseWriter, r *http.Request) {
 	counts.Enqueued += enq.Enqueued
 	counts.AlreadyPresent += enq.AlreadyPresent
 	counts.AlreadyDownloaded += enq.AlreadyDownloaded
+	log.Printf("downloads: enqueue result mode=%s year=%d requested_round=%d requested_type=%s enqueued=%d already_present=%d already_downloaded=%d skipped_future=%d",
+		req.Mode, req.Year, req.Round, strings.ToUpper(strings.TrimSpace(req.SessionType)),
+		counts.Enqueued, counts.AlreadyPresent, counts.AlreadyDownloaded, counts.SkippedFuture)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mode":   req.Mode,
@@ -150,9 +159,17 @@ func collectTargetsForMode(req downloadEnqueueRequest, events []any) ([]sessionK
 			return nil, counts, fmt.Errorf("round and session_type are required for mode=session")
 		}
 		matched := false
+		knownRounds := make([]int, 0, len(events))
 		for _, eAny := range events {
 			evt, ok := eAny.(map[string]any)
-			if !ok || asInt(evt["round_number"]) != req.Round {
+			if !ok {
+				continue
+			}
+			roundNumber := asInt(evt["round_number"])
+			if roundNumber > 0 {
+				knownRounds = append(knownRounds, roundNumber)
+			}
+			if roundNumber != req.Round {
 				continue
 			}
 			sessions, _ := evt["sessions"].([]any)
@@ -173,7 +190,7 @@ func collectTargetsForMode(req downloadEnqueueRequest, events []any) ([]sessionK
 			}
 		}
 		if !matched {
-			return nil, counts, fmt.Errorf("session not found in schedule")
+			return nil, counts, fmt.Errorf("session not found in schedule (round=%d type=%s known_rounds=%v)", req.Round, t, knownRounds)
 		}
 	case "weekend", "season_all", "season_races", "season_races_quali":
 		if req.Mode == "weekend" && req.Round <= 0 {
