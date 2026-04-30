@@ -19,6 +19,7 @@ import (
 
 const (
 	openF1ChunkMinutesDefault = 30
+	openF1ChunkMinSeconds     = 300
 )
 
 type openF1Meeting struct {
@@ -154,6 +155,16 @@ type openF1SessionContext struct {
 	MeetingModel *seasonMeeting
 	StartUTC     time.Time
 	EndUTC       time.Time
+}
+
+type openF1HTTPError struct {
+	URL    string
+	Status int
+	Body   string
+}
+
+func (e openF1HTTPError) Error() string {
+	return fmt.Sprintf("http %s -> %d: %s", e.URL, e.Status, strings.TrimSpace(e.Body))
 }
 
 func (p *GoSessionProcessor) processSessionViaOpenF1(ctx context.Context, year, round int, sessionType string, onStatus func(string)) error {
@@ -1001,12 +1012,21 @@ func (p *GoSessionProcessor) fetchOpenF1JSON(ctx context.Context, endpoint strin
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return json.Unmarshal(trimBOM(body), out)
 		}
-		lastErr = fmt.Errorf("http %s -> %d: %s", u, resp.StatusCode, strings.TrimSpace(string(body)))
-		if resp.StatusCode != 429 || attempt >= maxRetries {
+		lastErr = openF1HTTPError{
+			URL:    u,
+			Status: resp.StatusCode,
+			Body:   string(body),
+		}
+		if (resp.StatusCode != 429 && (resp.StatusCode < 500 || resp.StatusCode > 599)) || attempt >= maxRetries {
 			return lastErr
 		}
-		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
-		log.Printf("processor(openf1): rate limited endpoint=%s attempt=%d/%d retry_after=%s", endpoint, attempt, maxRetries, retryAfter)
+		retryAfter := time.Duration(0)
+		if resp.StatusCode == 429 {
+			retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+			log.Printf("processor(openf1): rate limited endpoint=%s attempt=%d/%d retry_after=%s", endpoint, attempt, maxRetries, retryAfter)
+		} else {
+			log.Printf("processor(openf1): server error endpoint=%s status=%d attempt=%d/%d", endpoint, resp.StatusCode, attempt, maxRetries)
+		}
 		if waitErr := p.sleepWithContext(ctx, p.openF1RetryDelay(attempt, retryAfter)); waitErr != nil {
 			return waitErr
 		}
@@ -1026,24 +1046,56 @@ func fetchOpenF1Chunked[T any](ctx context.Context, p *GoSessionProcessor, endpo
 	if chunkDur <= 0 {
 		chunkDur = 30 * time.Minute
 	}
+	minChunkSeconds := readPositiveIntEnv("OPENF1_CHUNK_MIN_SECONDS", openF1ChunkMinSeconds)
+	minChunkDur := time.Duration(minChunkSeconds) * time.Second
+	if minChunkDur <= 0 {
+		minChunkDur = 5 * time.Minute
+	}
 	out := make([]T, 0, 8192)
 	for chunkStart := startUTC; chunkStart.Before(endUTC); chunkStart = chunkStart.Add(chunkDur) {
 		chunkEnd := chunkStart.Add(chunkDur)
 		if chunkEnd.After(endUTC) {
 			chunkEnd = endUTC
 		}
-		params := map[string]string{
-			"session_key": strconv.Itoa(sessionKey),
-			"date>=":      chunkStart.UTC().Format(time.RFC3339),
-			"date<":       chunkEnd.UTC().Format(time.RFC3339),
-		}
-		part := make([]T, 0, 1024)
-		if err := p.fetchOpenF1JSON(ctx, endpoint, params, &part); err != nil {
+		part, err := fetchOpenF1ChunkAdaptive[T](ctx, p, endpoint, sessionKey, chunkStart, chunkEnd, minChunkDur)
+		if err != nil {
 			return nil, fmt.Errorf("openf1 %s chunk %s..%s failed: %w", endpoint, chunkStart.UTC().Format(time.RFC3339), chunkEnd.UTC().Format(time.RFC3339), err)
 		}
 		out = append(out, part...)
 	}
 	return out, nil
+}
+
+func fetchOpenF1ChunkAdaptive[T any](ctx context.Context, p *GoSessionProcessor, endpoint string, sessionKey int, startUTC, endUTC time.Time, minChunkDur time.Duration) ([]T, error) {
+	params := map[string]string{
+		"session_key": strconv.Itoa(sessionKey),
+		"date>=":      startUTC.UTC().Format(time.RFC3339),
+		"date<":       endUTC.UTC().Format(time.RFC3339),
+	}
+	part := make([]T, 0, 1024)
+	err := p.fetchOpenF1JSON(ctx, endpoint, params, &part)
+	if err == nil {
+		return part, nil
+	}
+
+	var httpErr openF1HTTPError
+	if errors.As(err, &httpErr) && httpErr.Status >= 500 && httpErr.Status <= 599 && endUTC.Sub(startUTC) > minChunkDur {
+		mid := startUTC.Add(endUTC.Sub(startUTC) / 2)
+		if !mid.After(startUTC) || !endUTC.After(mid) {
+			return nil, err
+		}
+		log.Printf("processor(openf1): splitting chunk endpoint=%s window=%s..%s due to status=%d", endpoint, startUTC.UTC().Format(time.RFC3339), endUTC.UTC().Format(time.RFC3339), httpErr.Status)
+		left, leftErr := fetchOpenF1ChunkAdaptive[T](ctx, p, endpoint, sessionKey, startUTC, mid, minChunkDur)
+		if leftErr != nil {
+			return nil, leftErr
+		}
+		right, rightErr := fetchOpenF1ChunkAdaptive[T](ctx, p, endpoint, sessionKey, mid, endUTC, minChunkDur)
+		if rightErr != nil {
+			return nil, rightErr
+		}
+		return append(left, right...), nil
+	}
+	return nil, err
 }
 
 func (p *GoSessionProcessor) waitOpenF1Turn(ctx context.Context) error {
